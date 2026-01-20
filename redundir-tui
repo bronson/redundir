@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""
+redundir-tui - Interactive TUI for exploring redundant directories
+
+This provides a split-pane interface for browsing duplicate files:
+- Top pane: List of directories with redundancy scores
+- Bottom pane: Related directories and duplicate files for selected directory
+"""
+
+import curses
+import sys
+import os
+from pathlib import Path
+
+# Import core functions from redundir by loading it directly
+def load_redundir():
+    """Load redundir module from same directory or PATH."""
+    import types
+
+    # Try to find redundir in same directory as this script
+    # Check multiple possible locations
+    possible_paths = [
+        Path(__file__).parent / "redundir",  # Same directory
+        Path.cwd() / "redundir",  # Current working directory
+        Path(sys.argv[0]).parent / "redundir",  # Script directory from argv
+    ]
+
+    for redundir_path in possible_paths:
+        if redundir_path.exists() and redundir_path.is_file():
+            try:
+                # Read and execute the file directly since it has no .py extension
+                with open(redundir_path, 'r') as f:
+                    code = f.read()
+
+                # Create a module to hold the executed code
+                redundir = types.ModuleType('redundir')
+                redundir.__file__ = str(redundir_path)
+                sys.modules['redundir'] = redundir
+
+                # Execute the code in the module's namespace
+                exec(code, redundir.__dict__)
+
+                # Verify required functions exist
+                if hasattr(redundir, 'find_duplicates') and hasattr(redundir, 'calculate_redundancy_score'):
+                    return redundir
+            except Exception as e:
+                print(f"Error loading {redundir_path}: {e}", file=sys.stderr)
+                continue
+
+    # Try regular import as fallback
+    try:
+        import redundir
+        return redundir
+    except ImportError:
+        pass
+
+    print("Error: Could not find redundir script", file=sys.stderr)
+    print("Tried locations:", file=sys.stderr)
+    for p in possible_paths:
+        print(f"  {p} (exists: {p.exists()})", file=sys.stderr)
+    sys.exit(1)
+
+redundir_module = load_redundir()
+find_duplicates = redundir_module.find_duplicates
+calculate_redundancy_score = redundir_module.calculate_redundancy_score
+
+
+class RedundirTUI:
+    def __init__(self, root_path, algorithm='blake2b', jobs=4):
+        self.root_path = Path(root_path).resolve()
+        self.algorithm = algorithm
+        self.jobs = jobs
+        self.selected_idx = 0
+        self.top_offset = 0
+        self.bottom_offset = 0
+
+        # Data will be populated by scan()
+        self.sorted_dirs = []
+        self.dir_stats = {}
+        self.file_to_hash = {}
+        self.hash_to_dirs = {}
+        self.dir_all_files = {}
+        self.total_duplicates = 0
+        self.total_files = 0
+
+    def scan(self):
+        """Scan the directory tree for duplicates."""
+        result = find_duplicates(
+            self.root_path,
+            algorithm=self.algorithm,
+            jobs=self.jobs,
+            quiet=True
+        )
+        self.dir_stats, self.total_duplicates, self.total_files, \
+            self.file_to_hash, self.hash_to_dirs, self.dir_all_files = result
+
+        # Sort directories by redundancy score
+        self.sorted_dirs = sorted(
+            self.dir_stats.items(),
+            key=lambda x: (-calculate_redundancy_score(x[1][0], x[1][1]), str(x[0]))
+        )
+
+    def get_relative_path(self, path):
+        """Convert absolute path to relative display path."""
+        try:
+            rel = path.relative_to(self.root_path)
+            return str(rel) if str(rel) != '.' else '.'
+        except ValueError:
+            return str(path)
+
+    def get_related_dirs(self, dir_path):
+        """Get related directories and their hypothetical redundancy scores."""
+        # Find all hashes in this directory
+        dir_hashes = set()
+        for fpath in self.dir_all_files.get(dir_path, []):
+            if fpath in self.file_to_hash:
+                dir_hashes.add(self.file_to_hash[fpath])
+
+        # Find related directories
+        related_dirs = set()
+        for h in dir_hashes:
+            for d in self.hash_to_dirs[h]:
+                if d != dir_path:
+                    related_dirs.add(d)
+
+        # Calculate hypothetical redundancy
+        related_info = []
+        for related_dir in related_dirs:
+            related_files = self.dir_all_files.get(related_dir, [])
+            total_related = len(related_files)
+
+            hypothetical_duplicates = 0
+            for fpath in related_files:
+                if fpath in self.file_to_hash:
+                    h = self.file_to_hash[fpath]
+                    other_dirs = self.hash_to_dirs[h] - {dir_path, related_dir}
+                    if len(other_dirs) > 0:
+                        hypothetical_duplicates += 1
+
+            hyp_score = calculate_redundancy_score(hypothetical_duplicates, total_related)
+            rel_display = self.get_relative_path(related_dir)
+            related_info.append((hyp_score, hypothetical_duplicates, total_related, rel_display))
+
+        # Sort by hypothetical redundancy score
+        related_info.sort(key=lambda x: (-x[0], str(x[3])))
+        return related_info
+
+    def get_duplicate_files(self, dir_path):
+        """Get list of duplicate files in the directory."""
+        dup_files = []
+        for fpath in self.dir_all_files.get(dir_path, []):
+            if fpath in self.file_to_hash:
+                dup_files.append(fpath.name)
+        return sorted(dup_files)
+
+    def draw_top_pane(self, win, height, width):
+        """Draw the directory list in the top pane."""
+        win.clear()
+        win.border()
+
+        # Title
+        title = f" Redundant Directories ({len(self.sorted_dirs)}) "
+        win.addstr(0, 2, title, curses.A_BOLD)
+
+        # Calculate column width for count
+        max_count_width = max(
+            len(f"{dup}/{total}")
+            for _, (dup, total) in self.sorted_dirs
+        ) if self.sorted_dirs else 3
+
+        # Display directories
+        display_height = height - 2
+        for i in range(display_height):
+            idx = self.top_offset + i
+            if idx >= len(self.sorted_dirs):
+                break
+
+            dir_path, (duplicates, total) = self.sorted_dirs[idx]
+            score = calculate_redundancy_score(duplicates, total)
+            rel_path = self.get_relative_path(dir_path)
+
+            # Format line
+            percent_str = f"{score:7.2%}"
+            count_str = f"{duplicates}/{total}".rjust(max_count_width)
+            line = f"{percent_str}  {count_str}  {rel_path}"
+
+            # Truncate if too long
+            max_len = width - 3
+            if len(line) > max_len:
+                line = line[:max_len-3] + "..."
+
+            y = i + 1
+            attr = curses.A_REVERSE if idx == self.selected_idx else curses.A_NORMAL
+            win.addstr(y, 1, line.ljust(width - 2), attr)
+
+        win.refresh()
+
+    def draw_bottom_pane(self, win, height, width):
+        """Draw the details for selected directory in the bottom pane."""
+        win.clear()
+        win.border()
+
+        if not self.sorted_dirs:
+            win.addstr(1, 1, "No duplicate files found.")
+            win.refresh()
+            return
+
+        dir_path, (duplicates, total) = self.sorted_dirs[self.selected_idx]
+        rel_path = self.get_relative_path(dir_path)
+
+        # Title
+        title = f" Details: {rel_path} "
+        if len(title) > width - 4:
+            title = " " + title[-(width-5):] + " "
+        win.addstr(0, 2, title, curses.A_BOLD)
+
+        # Get related directories and duplicate files
+        related_dirs = self.get_related_dirs(dir_path)
+        dup_files = self.get_duplicate_files(dir_path)
+
+        # Calculate max count width
+        max_count_width = 3
+        if related_dirs:
+            max_count_width = max(
+                len(f"{dup}/{total}")
+                for _, dup, total, _ in related_dirs
+            )
+
+        lines = []
+
+        # Related directories section
+        if related_dirs:
+            lines.append(("Related directories (if this dir didn't exist):", curses.A_BOLD))
+            for hyp_score, hyp_dup, hyp_total, rel_display in related_dirs:
+                percent_str = f"{hyp_score:7.2%}"
+                count_str = f"{hyp_dup}/{hyp_total}".rjust(max_count_width)
+                line = f"  {percent_str}  {count_str}  {rel_display}"
+                lines.append((line, curses.A_NORMAL))
+            lines.append(("", curses.A_NORMAL))
+
+        # Duplicate files section
+        if dup_files:
+            lines.append((f"Duplicate files ({len(dup_files)}):", curses.A_BOLD))
+            for fname in dup_files:
+                lines.append((f"  {fname}", curses.A_NORMAL))
+
+        # Display with scrolling
+        display_height = height - 2
+        for i in range(display_height):
+            idx = self.bottom_offset + i
+            if idx >= len(lines):
+                break
+
+            line, attr = lines[idx]
+            y = i + 1
+
+            # Truncate if too long
+            max_len = width - 3
+            if len(line) > max_len:
+                line = line[:max_len-3] + "..."
+
+            try:
+                win.addstr(y, 1, line, attr)
+            except curses.error:
+                pass  # Ignore errors from writing to last line
+
+        # Scrollbar indicator
+        if len(lines) > display_height:
+            indicator = f" [{self.bottom_offset + 1}-{min(self.bottom_offset + display_height, len(lines))}/{len(lines)}] "
+            try:
+                win.addstr(height - 1, width - len(indicator) - 1, indicator, curses.A_DIM)
+            except curses.error:
+                pass
+
+        win.refresh()
+
+    def run(self, stdscr):
+        """Main TUI loop."""
+        curses.curs_set(0)  # Hide cursor
+        stdscr.clear()
+
+        # Initialize colors if available
+        if curses.has_colors():
+            curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)
+
+        # Show loading message
+        height, width = stdscr.getmaxyx()
+        stdscr.addstr(height // 2, width // 2 - 10, "Scanning directories...", curses.A_BOLD)
+        stdscr.refresh()
+
+        # Scan for duplicates
+        self.scan()
+
+        if not self.sorted_dirs:
+            stdscr.clear()
+            stdscr.addstr(height // 2, width // 2 - 12, "No duplicate files found.", curses.A_BOLD)
+            stdscr.addstr(height // 2 + 1, width // 2 - 10, "Press any key to exit.")
+            stdscr.refresh()
+            stdscr.getch()
+            return
+
+        # Main loop
+        while True:
+            height, width = stdscr.getmaxyx()
+
+            # Split screen: top 40%, bottom 60%
+            top_height = max(5, height * 2 // 5)
+            bottom_height = height - top_height
+
+            # Create windows
+            top_win = curses.newwin(top_height, width, 0, 0)
+            bottom_win = curses.newwin(bottom_height, width, top_height, 0)
+
+            # Draw panes
+            self.draw_top_pane(top_win, top_height, width)
+            self.draw_bottom_pane(bottom_win, bottom_height, width)
+
+            # Handle input
+            key = stdscr.getch()
+
+            # Navigation keys
+            if key in (ord('q'), ord('Q'), 27):  # q, Q, or ESC
+                break
+            elif key in (curses.KEY_UP, ord('k')):
+                if self.selected_idx > 0:
+                    self.selected_idx -= 1
+                    self.bottom_offset = 0
+                    # Adjust top offset if needed
+                    if self.selected_idx < self.top_offset:
+                        self.top_offset = self.selected_idx
+            elif key in (curses.KEY_DOWN, ord('j')):
+                if self.selected_idx < len(self.sorted_dirs) - 1:
+                    self.selected_idx += 1
+                    self.bottom_offset = 0
+                    # Adjust top offset if needed
+                    display_height = top_height - 2
+                    if self.selected_idx >= self.top_offset + display_height:
+                        self.top_offset = self.selected_idx - display_height + 1
+            elif key == curses.KEY_PPAGE:  # Page Up
+                self.selected_idx = max(0, self.selected_idx - (top_height - 2))
+                self.top_offset = max(0, self.top_offset - (top_height - 2))
+                self.bottom_offset = 0
+            elif key in (curses.KEY_NPAGE, 6):  # Page Down or Ctrl-F
+                display_height = top_height - 2
+                self.selected_idx = min(len(self.sorted_dirs) - 1, self.selected_idx + display_height)
+                self.top_offset = min(max(0, len(self.sorted_dirs) - display_height),
+                                     self.top_offset + display_height)
+                self.bottom_offset = 0
+            elif key == 2:  # Ctrl-B
+                self.selected_idx = max(0, self.selected_idx - (top_height - 2))
+                self.top_offset = max(0, self.top_offset - (top_height - 2))
+                self.bottom_offset = 0
+            elif key == curses.KEY_HOME:
+                self.selected_idx = 0
+                self.top_offset = 0
+                self.bottom_offset = 0
+            elif key == curses.KEY_END:
+                self.selected_idx = len(self.sorted_dirs) - 1
+                display_height = top_height - 2
+                self.top_offset = max(0, len(self.sorted_dirs) - display_height)
+                self.bottom_offset = 0
+            elif key == curses.KEY_RESIZE:
+                stdscr.clear()
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog='redundir-tui',
+        description='Interactive TUI for exploring redundant directories.'
+    )
+    parser.add_argument(
+        'directory',
+        nargs='?',
+        default='.',
+        help='Directory to scan (default: current directory)'
+    )
+    parser.add_argument(
+        '-a', '--algorithm',
+        default='blake2b',
+        choices=['md5', 'sha1', 'sha256', 'blake2b', 'blake2s'],
+        help='Hash algorithm to use (default: blake2b)'
+    )
+    parser.add_argument(
+        '-j', '--jobs',
+        type=int,
+        default=4,
+        metavar='N',
+        help='Number of parallel hashing jobs (default: 4, use 1 to disable)'
+    )
+
+    args = parser.parse_args()
+
+    root = Path(args.directory).resolve()
+
+    if not root.exists():
+        print(f"Error: '{args.directory}' does not exist", file=sys.stderr)
+        sys.exit(1)
+
+    if not root.is_dir():
+        print(f"Error: '{args.directory}' is not a directory", file=sys.stderr)
+        sys.exit(1)
+
+    tui = RedundirTUI(root, algorithm=args.algorithm, jobs=args.jobs)
+
+    try:
+        curses.wrapper(tui.run)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == '__main__':
+    main()

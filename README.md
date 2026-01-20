@@ -2,16 +2,19 @@
 
 A command-line utility that finds directories containing duplicate files and ranks them by redundancy.
 
+Includes both a CLI tool (`redundir`) and an interactive TUI (`redundir-tui`).
+
 ## Installation
 
 ```sh
 curl -o ~/.local/bin/redundir https://raw.githubusercontent.com/USER/redundirs/main/redundir
-chmod +x ~/.local/bin/redundir
+curl -o ~/.local/bin/redundir-tui https://raw.githubusercontent.com/USER/redundirs/main/redundir-tui
+chmod +x ~/.local/bin/redundir ~/.local/bin/redundir-tui
 ```
 
-Or just copy `redundir` anywhere in your `$PATH`. Requires Python 3.10+ with no external dependencies.
+Or just copy `redundir` and `redundir-tui` anywhere in your `$PATH`. Both scripts must be in the same directory. Requires Python 3.10+ with no external dependencies.
 
-## Usage
+## CLI Usage
 
 ```
 redundir [directory] [-a ALGORITHM] [-j N] [-v] [-q]
@@ -54,6 +57,33 @@ $ redundir ~/Documents -v
 ```
 
 This shows that if `backups/old` was removed, `backups/new` would have 0% redundancy (all its duplicates were with `old`), while `photos/2023` would still have 50% redundancy (duplicates exist elsewhere too).
+
+## Interactive TUI
+
+`redundir-tui` provides a split-pane interface for exploring duplicate files:
+
+```
+redundir-tui [directory] [-a ALGORITHM] [-j N]
+```
+
+**Features:**
+- **Top pane**: List of directories with redundancy scores (navigate with arrow keys, j/k, PgUp/PgDn, Ctrl-F/Ctrl-B)
+- **Bottom pane**: Shows for the selected directory:
+  - Related directories that share files (with hypothetical redundancy if current dir didn't exist)
+  - List of all duplicate files in the directory
+
+**Keys:**
+- `↑`/`↓` or `j`/`k` - Navigate directory list
+- `PgUp`/`PgDn` or `Ctrl-B`/`Ctrl-F` - Page up/down
+- `Home`/`End` - Jump to first/last directory
+- `q` or `Esc` - Quit
+
+**Example:**
+```
+$ redundir-tui ~/Documents
+```
+
+The TUI scans on startup, then lets you interactively explore which directories share files and see exactly which files are duplicated.
 
 ## How It Works
 
