@@ -14,13 +14,14 @@ Or just copy `redundir` anywhere in your `$PATH`. Requires Python 3.10+ with no 
 ## Usage
 
 ```
-redundir [directory] [-a ALGORITHM] [-v] [-q]
+redundir [directory] [-a ALGORITHM] [-j N] [-v] [-q]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `directory` | Directory to scan (default: `.`) |
 | `-a, --algorithm` | Hash algorithm: `md5`, `sha1`, `sha256`, `blake2b`, `blake2s` (default: `blake2b`) |
+| `-j, --jobs` | Number of parallel hashing jobs (default: `4`, use `1` to disable) |
 | `-v, --verbose` | Show scan progress |
 | `-q, --quiet` | Suppress status messages |
 
@@ -38,10 +39,18 @@ Found 3 directories with duplicate files.
 
 ## How It Works
 
-1. Recursively scans all files and computes hashes (BLAKE2b by default for speed)
-2. Identifies duplicates (files with identical content anywhere in the tree)
-3. Calculates each directory's **redundancy score**: `duplicate_files / total_files`
-4. Outputs directories sorted by score (most redundant first)
+1. Recursively scans all files and groups them by size (fast, no hashing needed)
+2. Only hashes files that have potential duplicates (same size as another file)
+3. Uses parallel processing (4 workers by default) to hash files quickly
+4. Identifies duplicates (files with identical content anywhere in the tree)
+5. Calculates each directory's **redundancy score**: `duplicate_files / total_files`
+6. Outputs directories sorted by score (most redundant first)
+
+**Performance optimizations:**
+- Size-based pre-filtering skips hashing files with unique sizes
+- BLAKE2b hashing is faster than SHA256
+- Parallel processing utilizes multiple CPU cores
+- 8MB chunk size for efficient I/O
 
 ## License
 
