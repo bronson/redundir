@@ -73,6 +73,8 @@ class RedundirTUI:
         self.selected_idx = 0
         self.top_offset = 0
         self.bottom_offset = 0
+        self.bottom_selected_idx = 0
+        self.active_pane = 'top'  # 'top' or 'bottom'
 
         # Data will be populated by scan()
         self.sorted_dirs = []
@@ -83,13 +85,13 @@ class RedundirTUI:
         self.total_duplicates = 0
         self.total_files = 0
 
-    def scan(self):
+    def scan(self, quiet=False):
         """Scan the directory tree for duplicates."""
         result = find_duplicates(
             self.root_path,
             algorithm=self.algorithm,
             jobs=self.jobs,
-            quiet=True
+            quiet=quiet
         )
         self.dir_stats, self.total_duplicates, self.total_files, \
             self.file_to_hash, self.hash_to_dirs, self.dir_all_files = result
@@ -156,11 +158,18 @@ class RedundirTUI:
     def draw_top_pane(self, win, height, width):
         """Draw the directory list in the top pane."""
         win.clear()
+
+        # Border with highlight if active
+        if self.active_pane == 'top':
+            win.attron(curses.A_BOLD)
         win.border()
+        if self.active_pane == 'top':
+            win.attroff(curses.A_BOLD)
 
         # Title
         title = f" Redundant Directories ({len(self.sorted_dirs)}) "
-        win.addstr(0, 2, title, curses.A_BOLD)
+        title_attr = curses.A_BOLD | curses.A_REVERSE if self.active_pane == 'top' else curses.A_BOLD
+        win.addstr(0, 2, title, title_attr)
 
         # Calculate column width for count
         max_count_width = max(
@@ -190,7 +199,10 @@ class RedundirTUI:
                 line = line[:max_len-3] + "..."
 
             y = i + 1
-            attr = curses.A_REVERSE if idx == self.selected_idx else curses.A_NORMAL
+            if idx == self.selected_idx:
+                attr = curses.A_REVERSE
+            else:
+                attr = curses.A_NORMAL
             win.addstr(y, 1, line.ljust(width - 2), attr)
 
         win.refresh()
@@ -198,7 +210,13 @@ class RedundirTUI:
     def draw_bottom_pane(self, win, height, width):
         """Draw the details for selected directory in the bottom pane."""
         win.clear()
+
+        # Border with highlight if active
+        if self.active_pane == 'bottom':
+            win.attron(curses.A_BOLD)
         win.border()
+        if self.active_pane == 'bottom':
+            win.attroff(curses.A_BOLD)
 
         if not self.sorted_dirs:
             win.addstr(1, 1, "No duplicate files found.")
@@ -212,7 +230,8 @@ class RedundirTUI:
         title = f" Details: {rel_path} "
         if len(title) > width - 4:
             title = " " + title[-(width-5):] + " "
-        win.addstr(0, 2, title, curses.A_BOLD)
+        title_attr = curses.A_BOLD | curses.A_REVERSE if self.active_pane == 'bottom' else curses.A_BOLD
+        win.addstr(0, 2, title, title_attr)
 
         # Get related directories and duplicate files
         related_dirs = self.get_related_dirs(dir_path)
@@ -259,6 +278,10 @@ class RedundirTUI:
             if len(line) > max_len:
                 line = line[:max_len-3] + "..."
 
+            # Highlight selected line if bottom pane is active
+            if self.active_pane == 'bottom' and idx == self.bottom_selected_idx:
+                attr = curses.A_REVERSE
+
             try:
                 win.addstr(y, 1, line, attr)
             except curses.error:
@@ -274,6 +297,9 @@ class RedundirTUI:
 
         win.refresh()
 
+        # Store lines count for navigation
+        self.bottom_lines_count = len(lines)
+
     def run(self, stdscr):
         """Main TUI loop."""
         curses.curs_set(0)  # Hide cursor
@@ -285,11 +311,8 @@ class RedundirTUI:
 
         # Show loading message
         height, width = stdscr.getmaxyx()
-        stdscr.addstr(height // 2, width // 2 - 10, "Scanning directories...", curses.A_BOLD)
+        stdscr.addstr(height // 2, width // 2 - 10, "Starting TUI...", curses.A_BOLD)
         stdscr.refresh()
-
-        # Scan for duplicates
-        self.scan()
 
         if not self.sorted_dirs:
             stdscr.clear()
@@ -318,47 +341,108 @@ class RedundirTUI:
             # Handle input
             key = stdscr.getch()
 
+            # Tab to switch panes
+            if key == ord('\t'):  # Tab key
+                if self.active_pane == 'top':
+                    self.active_pane = 'bottom'
+                    self.bottom_selected_idx = 0
+                    self.bottom_offset = 0
+                else:
+                    self.active_pane = 'top'
+                continue
+
             # Navigation keys
             if key in (ord('q'), ord('Q'), 27):  # q, Q, or ESC
                 break
             elif key in (curses.KEY_UP, ord('k')):
-                if self.selected_idx > 0:
-                    self.selected_idx -= 1
-                    self.bottom_offset = 0
-                    # Adjust top offset if needed
-                    if self.selected_idx < self.top_offset:
-                        self.top_offset = self.selected_idx
+                if self.active_pane == 'top':
+                    if self.selected_idx > 0:
+                        self.selected_idx -= 1
+                        self.bottom_offset = 0
+                        self.bottom_selected_idx = 0
+                        # Adjust top offset if needed
+                        if self.selected_idx < self.top_offset:
+                            self.top_offset = self.selected_idx
+                else:  # bottom pane
+                    if self.bottom_selected_idx > 0:
+                        self.bottom_selected_idx -= 1
+                        # Adjust bottom offset if needed
+                        if self.bottom_selected_idx < self.bottom_offset:
+                            self.bottom_offset = self.bottom_selected_idx
             elif key in (curses.KEY_DOWN, ord('j')):
-                if self.selected_idx < len(self.sorted_dirs) - 1:
-                    self.selected_idx += 1
-                    self.bottom_offset = 0
-                    # Adjust top offset if needed
-                    display_height = top_height - 2
-                    if self.selected_idx >= self.top_offset + display_height:
-                        self.top_offset = self.selected_idx - display_height + 1
+                if self.active_pane == 'top':
+                    if self.selected_idx < len(self.sorted_dirs) - 1:
+                        self.selected_idx += 1
+                        self.bottom_offset = 0
+                        self.bottom_selected_idx = 0
+                        # Adjust top offset if needed
+                        display_height = top_height - 2
+                        if self.selected_idx >= self.top_offset + display_height:
+                            self.top_offset = self.selected_idx - display_height + 1
+                else:  # bottom pane
+                    if hasattr(self, 'bottom_lines_count') and self.bottom_selected_idx < self.bottom_lines_count - 1:
+                        self.bottom_selected_idx += 1
+                        # Adjust bottom offset if needed
+                        display_height = bottom_height - 2
+                        if self.bottom_selected_idx >= self.bottom_offset + display_height:
+                            self.bottom_offset = self.bottom_selected_idx - display_height + 1
             elif key == curses.KEY_PPAGE:  # Page Up
-                self.selected_idx = max(0, self.selected_idx - (top_height - 2))
-                self.top_offset = max(0, self.top_offset - (top_height - 2))
-                self.bottom_offset = 0
+                if self.active_pane == 'top':
+                    self.selected_idx = max(0, self.selected_idx - (top_height - 2))
+                    self.top_offset = max(0, self.top_offset - (top_height - 2))
+                    self.bottom_offset = 0
+                    self.bottom_selected_idx = 0
+                else:
+                    page_size = bottom_height - 2
+                    self.bottom_selected_idx = max(0, self.bottom_selected_idx - page_size)
+                    self.bottom_offset = max(0, self.bottom_offset - page_size)
             elif key in (curses.KEY_NPAGE, 6):  # Page Down or Ctrl-F
-                display_height = top_height - 2
-                self.selected_idx = min(len(self.sorted_dirs) - 1, self.selected_idx + display_height)
-                self.top_offset = min(max(0, len(self.sorted_dirs) - display_height),
-                                     self.top_offset + display_height)
-                self.bottom_offset = 0
+                if self.active_pane == 'top':
+                    display_height = top_height - 2
+                    self.selected_idx = min(len(self.sorted_dirs) - 1, self.selected_idx + display_height)
+                    self.top_offset = min(max(0, len(self.sorted_dirs) - display_height),
+                                         self.top_offset + display_height)
+                    self.bottom_offset = 0
+                    self.bottom_selected_idx = 0
+                else:
+                    if hasattr(self, 'bottom_lines_count'):
+                        page_size = bottom_height - 2
+                        self.bottom_selected_idx = min(self.bottom_lines_count - 1,
+                                                       self.bottom_selected_idx + page_size)
+                        display_height = bottom_height - 2
+                        self.bottom_offset = min(max(0, self.bottom_lines_count - display_height),
+                                                self.bottom_offset + page_size)
             elif key == 2:  # Ctrl-B
-                self.selected_idx = max(0, self.selected_idx - (top_height - 2))
-                self.top_offset = max(0, self.top_offset - (top_height - 2))
-                self.bottom_offset = 0
+                if self.active_pane == 'top':
+                    self.selected_idx = max(0, self.selected_idx - (top_height - 2))
+                    self.top_offset = max(0, self.top_offset - (top_height - 2))
+                    self.bottom_offset = 0
+                    self.bottom_selected_idx = 0
+                else:
+                    page_size = bottom_height - 2
+                    self.bottom_selected_idx = max(0, self.bottom_selected_idx - page_size)
+                    self.bottom_offset = max(0, self.bottom_offset - page_size)
             elif key == curses.KEY_HOME:
-                self.selected_idx = 0
-                self.top_offset = 0
-                self.bottom_offset = 0
+                if self.active_pane == 'top':
+                    self.selected_idx = 0
+                    self.top_offset = 0
+                    self.bottom_offset = 0
+                    self.bottom_selected_idx = 0
+                else:
+                    self.bottom_selected_idx = 0
+                    self.bottom_offset = 0
             elif key == curses.KEY_END:
-                self.selected_idx = len(self.sorted_dirs) - 1
-                display_height = top_height - 2
-                self.top_offset = max(0, len(self.sorted_dirs) - display_height)
-                self.bottom_offset = 0
+                if self.active_pane == 'top':
+                    self.selected_idx = len(self.sorted_dirs) - 1
+                    display_height = top_height - 2
+                    self.top_offset = max(0, len(self.sorted_dirs) - display_height)
+                    self.bottom_offset = 0
+                    self.bottom_selected_idx = 0
+                else:
+                    if hasattr(self, 'bottom_lines_count'):
+                        self.bottom_selected_idx = self.bottom_lines_count - 1
+                        display_height = bottom_height - 2
+                        self.bottom_offset = max(0, self.bottom_lines_count - display_height)
             elif key == curses.KEY_RESIZE:
                 stdscr.clear()
 
@@ -403,6 +487,14 @@ def main():
         sys.exit(1)
 
     tui = RedundirTUI(root, algorithm=args.algorithm, jobs=args.jobs)
+
+    # Scan with progress output before starting TUI
+    print(f"Scanning {root}...")
+    tui.scan(quiet=False)
+
+    if not tui.sorted_dirs:
+        print("No duplicate files found.")
+        sys.exit(0)
 
     try:
         curses.wrapper(tui.run)

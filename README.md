@@ -67,23 +67,34 @@ redundir-tui [directory] [-a ALGORITHM] [-j N]
 ```
 
 **Features:**
-- **Top pane**: List of directories with redundancy scores (navigate with arrow keys, j/k, PgUp/PgDn, Ctrl-F/Ctrl-B)
+- **Progress display**: Shows scanning progress before starting the TUI (just like CLI)
+- **Top pane**: List of directories with redundancy scores
 - **Bottom pane**: Shows for the selected directory:
   - Related directories that share files (with hypothetical redundancy if current dir didn't exist)
   - List of all duplicate files in the directory
+- **Active pane** is highlighted with bold border and can be navigated independently
+- Press `Tab` to switch between panes
 
 **Keys:**
-- `↑`/`↓` or `j`/`k` - Navigate directory list
-- `PgUp`/`PgDn` or `Ctrl-B`/`Ctrl-F` - Page up/down
-- `Home`/`End` - Jump to first/last directory
+- `Tab` - Switch between top and bottom panes
+- `↑`/`↓` or `j`/`k` - Navigate items in active pane
+- `PgUp`/`PgDn` or `Ctrl-B`/`Ctrl-F` - Page up/down in active pane
+- `Home`/`End` - Jump to first/last item in active pane
 - `q` or `Esc` - Quit
 
 **Example:**
 ```
 $ redundir-tui ~/Documents
+Scanning /home/user/Documents...
+  Found 1523 total files
+  Hashing 412 files, skipping 1111 files with unique sizes
+  Hashed 412 files
+  Found 89 duplicate files in 3 directories (overall redundancy: 21.60%)
+
+[Interactive TUI starts here with split panes]
 ```
 
-The TUI scans on startup, then lets you interactively explore which directories share files and see exactly which files are duplicated.
+The TUI shows full progress information during scanning, then starts the interactive interface where you can explore which directories share files and see exactly which files are duplicated.
 
 ## How It Works
 
