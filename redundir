@@ -48,7 +48,7 @@ def _hash_file_worker(args):
     return filepath, hash_file(filepath, algorithm)
 
 
-def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, verbose: bool = False) -> dict[Path, tuple[int, int]]:
+def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, quiet: bool = False) -> dict[Path, tuple[int, int]]:
     """
     Walk directory tree and find directories with duplicate files.
 
@@ -59,7 +59,7 @@ def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, 
         root_path: Root directory to scan
         algorithm: Hash algorithm to use
         jobs: Number of parallel jobs for hashing
-        verbose: If True, print progress information
+        quiet: If True, suppress progress information
 
     Returns:
         Dict mapping directory path to (duplicate_count, total_count)
@@ -70,7 +70,7 @@ def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, 
 
     file_count = 0
 
-    if verbose:
+    if not quiet:
         print(f"  Collecting files...", file=sys.stderr)
 
     for dirpath, dirnames, filenames in os.walk(root_path):
@@ -92,7 +92,7 @@ def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, 
                 except (IOError, OSError):
                     continue
 
-    if verbose:
+    if not quiet:
         print(f"  Found {file_count} files", file=sys.stderr)
 
     # Only hash files that have at least one other file with the same size
@@ -101,7 +101,7 @@ def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, 
         if len(paths) > 1:
             files_to_hash.extend(paths)
 
-    if verbose:
+    if not quiet:
         print(f"  Need to hash {len(files_to_hash)} files (skipped {file_count - len(files_to_hash)} unique sizes)", file=sys.stderr)
 
     # Hash files in parallel
@@ -116,7 +116,7 @@ def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, 
                     if file_hash:
                         file_hashes[file_hash].append(filepath)
 
-                    if verbose and i % 1000 == 0:
+                    if not quiet and i % 1000 == 0:
                         print(f"  Hashed {i}/{len(files_to_hash)} files...", file=sys.stderr)
         else:
             # Single-threaded mode
@@ -125,16 +125,16 @@ def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, 
                 if file_hash:
                     file_hashes[file_hash].append(filepath)
 
-                if verbose and i % 1000 == 0:
+                if not quiet and i % 1000 == 0:
                     print(f"  Hashed {i}/{len(files_to_hash)} files...", file=sys.stderr)
 
-    if verbose:
+    if not quiet:
         print(f"  Hashed {len(files_to_hash)} total files", file=sys.stderr)
 
     # Find hashes that appear more than once (duplicates)
     duplicate_hashes = {h for h, paths in file_hashes.items() if len(paths) > 1}
 
-    if verbose:
+    if not quiet:
         print(f"  Found {len(duplicate_hashes)} unique duplicate content hashes", file=sys.stderr)
 
     # Build a map of file path to hash for duplicate files
@@ -187,14 +187,9 @@ def main():
         help='Number of parallel hashing jobs (default: 4, use 1 to disable)'
     )
     parser.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        help='Show progress information'
-    )
-    parser.add_argument(
         '-q', '--quiet',
         action='store_true',
-        help='Suppress the "Scanning..." message'
+        help='Suppress progress messages'
     )
 
     args = parser.parse_args()
@@ -212,7 +207,7 @@ def main():
     if not args.quiet:
         print(f"Scanning {root}...", file=sys.stderr)
 
-    dir_stats = find_duplicates(root, algorithm=args.algorithm, jobs=args.jobs, verbose=args.verbose)
+    dir_stats = find_duplicates(root, algorithm=args.algorithm, jobs=args.jobs, quiet=args.quiet)
 
     if not dir_stats:
         if not args.quiet:

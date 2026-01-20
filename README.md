@@ -14,7 +14,7 @@ Or just copy `redundir` anywhere in your `$PATH`. Requires Python 3.10+ with no 
 ## Usage
 
 ```
-redundir [directory] [-a ALGORITHM] [-j N] [-v] [-q]
+redundir [directory] [-a ALGORITHM] [-j N] [-q]
 ```
 
 | Option | Description |
@@ -22,17 +22,21 @@ redundir [directory] [-a ALGORITHM] [-j N] [-v] [-q]
 | `directory` | Directory to scan (default: `.`) |
 | `-a, --algorithm` | Hash algorithm: `md5`, `sha1`, `sha256`, `blake2b`, `blake2s` (default: `blake2b`) |
 | `-j, --jobs` | Number of parallel hashing jobs (default: `4`, use `1` to disable) |
-| `-v, --verbose` | Show scan progress |
-| `-q, --quiet` | Suppress status messages |
+| `-q, --quiet` | Suppress progress messages |
 
 ## Example
 
 ```
 $ redundir ~/Documents
 Scanning /home/user/Documents...
-100.00% (4/4) /home/user/Documents/backups/old
- 75.00% (3/4) /home/user/Documents/photos/2023
- 66.67% (2/3) /home/user/Documents/projects/archive
+  Collecting files...
+  Found 1523 files
+  Need to hash 412 files (skipped 1111 unique sizes)
+  Hashed 412 total files
+  Found 89 unique duplicate content hashes
+100.00%  4/4  backups/old
+ 75.00%  3/4  photos/2023
+ 66.67%  2/3  projects/archive
 
 Found 3 directories with duplicate files.
 ```
