@@ -225,11 +225,18 @@ def main():
         key=lambda x: (-calculate_redundancy_score(x[1][0], x[1][1]), str(x[0]))
     )
 
-    # Print results
+    # Print results with relative paths
     for dir_path, (duplicates, total) in sorted_dirs:
         score = calculate_redundancy_score(duplicates, total)
-        # Format: "75.00% (3/4) /path/to/directory"
-        print(f"{score:6.2%} ({duplicates}/{total}) {dir_path}")
+        # Convert to relative path from root
+        try:
+            relative_path = dir_path.relative_to(root)
+            display_path = relative_path if str(relative_path) != '.' else '.'
+        except ValueError:
+            # If path is not relative to root, use absolute
+            display_path = dir_path
+        # Format: "75.00% (3/4) path/to/directory"
+        print(f"{score:6.2%} ({duplicates}/{total}) {display_path}")
 
     if not args.quiet:
         print(f"\nFound {len(dir_stats)} directories with duplicate files.", file=sys.stderr)
