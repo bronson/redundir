@@ -75,6 +75,7 @@ class RedundirTUI:
         self.bottom_offset = 0
         self.bottom_selected_idx = 0
         self.active_pane = 'top'  # 'top' or 'bottom'
+        self.last_bottom_dir_idx = None  # Track which directory's details we're showing
 
         # Data will be populated by scan()
         self.sorted_dirs = []
@@ -246,6 +247,7 @@ class RedundirTUI:
             )
 
         lines = []
+        selectable_indices = []  # Track which line indices are selectable
 
         # Related directories section
         if related_dirs:
@@ -254,6 +256,7 @@ class RedundirTUI:
                 percent_str = f"{hyp_score:7.2%}"
                 count_str = f"{hyp_dup}/{hyp_total}".rjust(max_count_width)
                 line = f"  {percent_str}  {count_str}  {rel_display}"
+                selectable_indices.append(len(lines))
                 lines.append((line, curses.A_NORMAL))
             lines.append(("", curses.A_NORMAL))
 
@@ -261,6 +264,7 @@ class RedundirTUI:
         if dup_files:
             lines.append((f"Duplicate files ({len(dup_files)}):", curses.A_BOLD))
             for fname in dup_files:
+                selectable_indices.append(len(lines))
                 lines.append((f"  {fname}", curses.A_NORMAL))
 
         # Display with scrolling
@@ -297,8 +301,9 @@ class RedundirTUI:
 
         win.refresh()
 
-        # Store lines count for navigation
+        # Store lines count and selectable indices for navigation
         self.bottom_lines_count = len(lines)
+        self.bottom_selectable_indices = selectable_indices
 
     def run(self, stdscr):
         """Main TUI loop."""
@@ -345,8 +350,15 @@ class RedundirTUI:
             if key == ord('\t'):  # Tab key
                 if self.active_pane == 'top':
                     self.active_pane = 'bottom'
-                    self.bottom_selected_idx = 0
-                    self.bottom_offset = 0
+                    # If switching to a different directory, reset selection
+                    if self.last_bottom_dir_idx != self.selected_idx:
+                        if hasattr(self, 'bottom_selectable_indices') and self.bottom_selectable_indices:
+                            self.bottom_selected_idx = self.bottom_selectable_indices[0]
+                        else:
+                            self.bottom_selected_idx = 0
+                        self.bottom_offset = 0
+                        self.last_bottom_dir_idx = self.selected_idx
+                    # Otherwise preserve the current selection (already set)
                 else:
                     self.active_pane = 'top'
                 continue
@@ -358,91 +370,97 @@ class RedundirTUI:
                 if self.active_pane == 'top':
                     if self.selected_idx > 0:
                         self.selected_idx -= 1
-                        self.bottom_offset = 0
-                        self.bottom_selected_idx = 0
+                        # Mark that bottom pane needs refresh for new directory
+                        self.last_bottom_dir_idx = None
                         # Adjust top offset if needed
                         if self.selected_idx < self.top_offset:
                             self.top_offset = self.selected_idx
                 else:  # bottom pane
-                    if self.bottom_selected_idx > 0:
-                        self.bottom_selected_idx -= 1
-                        # Adjust bottom offset if needed
-                        if self.bottom_selected_idx < self.bottom_offset:
-                            self.bottom_offset = self.bottom_selected_idx
+                    if hasattr(self, 'bottom_selectable_indices') and self.bottom_selectable_indices:
+                        current_pos = self.bottom_selectable_indices.index(self.bottom_selected_idx) if self.bottom_selected_idx in self.bottom_selectable_indices else 0
+                        if current_pos > 0:
+                            self.bottom_selected_idx = self.bottom_selectable_indices[current_pos - 1]
+                            # Adjust bottom offset if needed
+                            if self.bottom_selected_idx < self.bottom_offset:
+                                self.bottom_offset = self.bottom_selected_idx
             elif key in (curses.KEY_DOWN, ord('j')):
                 if self.active_pane == 'top':
                     if self.selected_idx < len(self.sorted_dirs) - 1:
                         self.selected_idx += 1
-                        self.bottom_offset = 0
-                        self.bottom_selected_idx = 0
+                        # Mark that bottom pane needs refresh for new directory
+                        self.last_bottom_dir_idx = None
                         # Adjust top offset if needed
                         display_height = top_height - 2
                         if self.selected_idx >= self.top_offset + display_height:
                             self.top_offset = self.selected_idx - display_height + 1
                 else:  # bottom pane
-                    if hasattr(self, 'bottom_lines_count') and self.bottom_selected_idx < self.bottom_lines_count - 1:
-                        self.bottom_selected_idx += 1
-                        # Adjust bottom offset if needed
-                        display_height = bottom_height - 2
-                        if self.bottom_selected_idx >= self.bottom_offset + display_height:
-                            self.bottom_offset = self.bottom_selected_idx - display_height + 1
+                    if hasattr(self, 'bottom_selectable_indices') and self.bottom_selectable_indices:
+                        current_pos = self.bottom_selectable_indices.index(self.bottom_selected_idx) if self.bottom_selected_idx in self.bottom_selectable_indices else -1
+                        if current_pos < len(self.bottom_selectable_indices) - 1:
+                            self.bottom_selected_idx = self.bottom_selectable_indices[current_pos + 1]
+                            # Adjust bottom offset if needed
+                            display_height = bottom_height - 2
+                            if self.bottom_selected_idx >= self.bottom_offset + display_height:
+                                self.bottom_offset = self.bottom_selected_idx - display_height + 1
             elif key == curses.KEY_PPAGE:  # Page Up
                 if self.active_pane == 'top':
                     self.selected_idx = max(0, self.selected_idx - (top_height - 2))
                     self.top_offset = max(0, self.top_offset - (top_height - 2))
-                    self.bottom_offset = 0
-                    self.bottom_selected_idx = 0
+                    self.last_bottom_dir_idx = None
                 else:
-                    page_size = bottom_height - 2
-                    self.bottom_selected_idx = max(0, self.bottom_selected_idx - page_size)
-                    self.bottom_offset = max(0, self.bottom_offset - page_size)
+                    if hasattr(self, 'bottom_selectable_indices') and self.bottom_selectable_indices:
+                        current_pos = self.bottom_selectable_indices.index(self.bottom_selected_idx) if self.bottom_selected_idx in self.bottom_selectable_indices else 0
+                        new_pos = max(0, current_pos - (bottom_height - 2))
+                        self.bottom_selected_idx = self.bottom_selectable_indices[new_pos]
+                        self.bottom_offset = max(0, self.bottom_selected_idx - (bottom_height - 2))
             elif key in (curses.KEY_NPAGE, 6):  # Page Down or Ctrl-F
                 if self.active_pane == 'top':
                     display_height = top_height - 2
                     self.selected_idx = min(len(self.sorted_dirs) - 1, self.selected_idx + display_height)
                     self.top_offset = min(max(0, len(self.sorted_dirs) - display_height),
                                          self.top_offset + display_height)
-                    self.bottom_offset = 0
-                    self.bottom_selected_idx = 0
+                    self.last_bottom_dir_idx = None
                 else:
-                    if hasattr(self, 'bottom_lines_count'):
-                        page_size = bottom_height - 2
-                        self.bottom_selected_idx = min(self.bottom_lines_count - 1,
-                                                       self.bottom_selected_idx + page_size)
+                    if hasattr(self, 'bottom_selectable_indices') and self.bottom_selectable_indices:
+                        current_pos = self.bottom_selectable_indices.index(self.bottom_selected_idx) if self.bottom_selected_idx in self.bottom_selectable_indices else 0
+                        new_pos = min(len(self.bottom_selectable_indices) - 1, current_pos + (bottom_height - 2))
+                        self.bottom_selected_idx = self.bottom_selectable_indices[new_pos]
                         display_height = bottom_height - 2
-                        self.bottom_offset = min(max(0, self.bottom_lines_count - display_height),
-                                                self.bottom_offset + page_size)
+                        if self.bottom_selected_idx >= self.bottom_offset + display_height:
+                            self.bottom_offset = self.bottom_selected_idx - display_height + 1
             elif key == 2:  # Ctrl-B
                 if self.active_pane == 'top':
                     self.selected_idx = max(0, self.selected_idx - (top_height - 2))
                     self.top_offset = max(0, self.top_offset - (top_height - 2))
-                    self.bottom_offset = 0
-                    self.bottom_selected_idx = 0
+                    self.last_bottom_dir_idx = None
                 else:
-                    page_size = bottom_height - 2
-                    self.bottom_selected_idx = max(0, self.bottom_selected_idx - page_size)
-                    self.bottom_offset = max(0, self.bottom_offset - page_size)
+                    if hasattr(self, 'bottom_selectable_indices') and self.bottom_selectable_indices:
+                        current_pos = self.bottom_selectable_indices.index(self.bottom_selected_idx) if self.bottom_selected_idx in self.bottom_selectable_indices else 0
+                        new_pos = max(0, current_pos - (bottom_height - 2))
+                        self.bottom_selected_idx = self.bottom_selectable_indices[new_pos]
+                        self.bottom_offset = max(0, self.bottom_selected_idx - (bottom_height - 2))
             elif key == curses.KEY_HOME:
                 if self.active_pane == 'top':
                     self.selected_idx = 0
                     self.top_offset = 0
-                    self.bottom_offset = 0
-                    self.bottom_selected_idx = 0
+                    self.last_bottom_dir_idx = None
                 else:
-                    self.bottom_selected_idx = 0
+                    if hasattr(self, 'bottom_selectable_indices') and self.bottom_selectable_indices:
+                        self.bottom_selected_idx = self.bottom_selectable_indices[0]
+                    else:
+                        self.bottom_selected_idx = 0
                     self.bottom_offset = 0
             elif key == curses.KEY_END:
                 if self.active_pane == 'top':
                     self.selected_idx = len(self.sorted_dirs) - 1
                     display_height = top_height - 2
                     self.top_offset = max(0, len(self.sorted_dirs) - display_height)
-                    self.bottom_offset = 0
-                    self.bottom_selected_idx = 0
+                    self.last_bottom_dir_idx = None
                 else:
-                    if hasattr(self, 'bottom_lines_count'):
-                        self.bottom_selected_idx = self.bottom_lines_count - 1
+                    if hasattr(self, 'bottom_selectable_indices') and self.bottom_selectable_indices:
+                        self.bottom_selected_idx = self.bottom_selectable_indices[-1]
                         display_height = bottom_height - 2
-                        self.bottom_offset = max(0, self.bottom_lines_count - display_height)
+                        self.bottom_offset = max(0, self.bottom_selected_idx - display_height + 1)
             elif key == curses.KEY_RESIZE:
                 stdscr.clear()
 
