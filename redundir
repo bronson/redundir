@@ -225,7 +225,11 @@ def main():
         key=lambda x: (-calculate_redundancy_score(x[1][0], x[1][1]), str(x[0]))
     )
 
-    # Print results with relative paths
+    # Print results with relative paths in aligned columns
+    # First pass: prepare all rows and find column widths
+    rows = []
+    max_count_width = 0
+
     for dir_path, (duplicates, total) in sorted_dirs:
         score = calculate_redundancy_score(duplicates, total)
         # Convert to relative path from root
@@ -235,8 +239,16 @@ def main():
         except ValueError:
             # If path is not relative to root, use absolute
             display_path = dir_path
-        # Format: "75.00% (3/4) path/to/directory"
-        print(f"{score:6.2%} ({duplicates}/{total}) {display_path}")
+
+        count_str = f"{duplicates}/{total}"
+        max_count_width = max(max_count_width, len(count_str))
+        rows.append((score, count_str, display_path))
+
+    # Second pass: print with aligned columns
+    for score, count_str, display_path in rows:
+        # Format percentage with proper alignment (right-align to 7 chars including %)
+        percent_str = f"{score:7.2%}"
+        print(f"{percent_str}  {count_str:>{max_count_width}}  {display_path}")
 
     if not args.quiet:
         print(f"\nFound {len(dir_stats)} directories with duplicate files.", file=sys.stderr)
