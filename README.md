@@ -74,6 +74,8 @@ redundir-tui [directory] [-a ALGORITHM] [-j N]
   - List of all duplicate files in the directory
 - **Active pane** is highlighted with bold border and can be navigated independently
 - Press `Tab` to switch between panes
+- **Smart navigation** in bottom pane skips headers and blank lines
+- **Directory jumping**: Press `Enter` or `→` on a related directory to jump to it; press `←` to go back through your history
 
 **Keys:**
 - `Tab` - Switch between panes

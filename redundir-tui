@@ -77,6 +77,7 @@ class RedundirTUI:
         self.active_pane = 'top'  # 'top' or 'bottom'
         self.last_bottom_dir_idx = None  # Track which directory's details we're showing
         self.show_quit_message = False  # Show "press q to quit" message
+        self.navigation_stack = []  # Stack of directory indices for back navigation
 
         # Data will be populated by scan()
         self.sorted_dirs = []
@@ -257,6 +258,7 @@ class RedundirTUI:
 
         lines = []
         selectable_indices = []  # Track which line indices are selectable
+        line_to_dir = {}  # Map line index to directory path for related directories
 
         # Related directories section
         if related_dirs:
@@ -265,7 +267,17 @@ class RedundirTUI:
                 percent_str = f"{hyp_score:7.2%}"
                 count_str = f"{hyp_dup}/{hyp_total}".rjust(max_count_width)
                 line = f"  {percent_str}  {count_str}  {rel_display}"
-                selectable_indices.append(len(lines))
+                line_idx = len(lines)
+                selectable_indices.append(line_idx)
+                # Store the actual directory path for this line (find it in related_dirs)
+                for related_dir in related_dirs:
+                    if related_dir[3] == rel_display:
+                        # Find this directory in sorted_dirs
+                        for idx, (dir_path, _) in enumerate(self.sorted_dirs):
+                            if self.get_relative_path(dir_path) == rel_display:
+                                line_to_dir[line_idx] = idx
+                                break
+                        break
                 lines.append((line, curses.A_NORMAL))
             lines.append(("", curses.A_NORMAL))
 
@@ -313,6 +325,7 @@ class RedundirTUI:
         # Store lines count and selectable indices for navigation
         self.bottom_lines_count = len(lines)
         self.bottom_selectable_indices = selectable_indices
+        self.bottom_line_to_dir = line_to_dir
 
     def run(self, stdscr):
         """Main TUI loop."""
@@ -377,7 +390,7 @@ class RedundirTUI:
                     self.active_pane = 'top'
                 continue
 
-            # Return key or Right arrow - switch from top to bottom pane (drill down)
+            # Return key or Right arrow - context-sensitive drill down
             if key in (ord('\n'), ord('\r'), curses.KEY_ENTER, curses.KEY_RIGHT):
                 if self.active_pane == 'top':
                     # Switch to bottom pane
@@ -390,17 +403,56 @@ class RedundirTUI:
                         self.bottom_offset = 0
                         self.last_bottom_dir_idx = self.selected_idx
                     self.show_quit_message = False
+                else:  # bottom pane
+                    # Check if current selection is a related directory
+                    if hasattr(self, 'bottom_line_to_dir') and self.bottom_selected_idx in self.bottom_line_to_dir:
+                        # Jump to that directory in top pane
+                        target_idx = self.bottom_line_to_dir[self.bottom_selected_idx]
+                        # Push current directory to navigation stack
+                        self.navigation_stack.append(self.selected_idx)
+                        # Jump to target directory
+                        self.selected_idx = target_idx
+                        self.active_pane = 'top'
+                        self.last_bottom_dir_idx = None
+                        # Adjust scroll to show selected directory
+                        if self.selected_idx < self.top_offset:
+                            self.top_offset = self.selected_idx
+                        elif self.selected_idx >= self.top_offset + (top_height - 2):
+                            self.top_offset = self.selected_idx - (top_height - 2) + 1
                 continue
 
             # Escape key or Left arrow - context-sensitive behavior
             if key in (27, curses.KEY_LEFT):  # ESC or Left arrow
                 if self.active_pane == 'bottom':
-                    # Switch to top pane (go back)
-                    self.active_pane = 'top'
+                    # Check if we have navigation history
+                    if key == curses.KEY_LEFT and self.navigation_stack:
+                        # Pop from stack and jump to that directory
+                        target_idx = self.navigation_stack.pop()
+                        self.selected_idx = target_idx
+                        self.active_pane = 'top'
+                        self.last_bottom_dir_idx = None
+                        # Adjust scroll to show selected directory
+                        if self.selected_idx < self.top_offset:
+                            self.top_offset = self.selected_idx
+                        elif self.selected_idx >= self.top_offset + (top_height - 2):
+                            self.top_offset = self.selected_idx - (top_height - 2) + 1
+                    else:
+                        # Just switch to top pane (normal go back)
+                        self.active_pane = 'top'
                     self.show_quit_message = False
                 else:  # top pane
-                    # Left arrow does nothing in top pane, ESC shows quit message
-                    if key == 27:
+                    # Left arrow in top pane - pop from navigation stack if available
+                    if key == curses.KEY_LEFT and self.navigation_stack:
+                        target_idx = self.navigation_stack.pop()
+                        self.selected_idx = target_idx
+                        self.last_bottom_dir_idx = None
+                        # Adjust scroll to show selected directory
+                        if self.selected_idx < self.top_offset:
+                            self.top_offset = self.selected_idx
+                        elif self.selected_idx >= self.top_offset + (top_height - 2):
+                            self.top_offset = self.selected_idx - (top_height - 2) + 1
+                    elif key == 27:
+                        # ESC shows quit message
                         self.show_quit_message = True
                 continue
 
