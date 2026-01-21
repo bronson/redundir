@@ -1,6 +1,6 @@
 # [dedupdir](https://github.com/bronson/dedupdir) Changelog
 
-## [0.1.0] - 2026-01-XX
+## [0.1.0] - 2026-01-21
 * rename project from redundir to dedupdir
   * The previous name implied that we want to make things more redundant, not less.
 * tui: Add the '?' keystroke to bring up a help screen anywhere.
