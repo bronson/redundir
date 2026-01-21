@@ -286,6 +286,41 @@ class DedupdirTUI:
         items.sort(key=lambda x: x['timestamp'], reverse=True)
         return items
 
+    def get_current_stats(self):
+        """Calculate current statistics: total files, duplicate files, and duplication percentage.
+
+        Returns a tuple: (total_files, duplicate_files, duplication_percent)
+        """
+        # Count all unique files across all directories
+        all_files = set()
+        for dir_path, files in self.dir_all_files.items():
+            all_files.update(files)
+
+        total_files = len(all_files)
+
+        if total_files == 0:
+            return 0, 0, 0.0
+
+        # Count duplicate files (files that exist in more than one directory)
+        duplicate_files = 0
+        for file_path in all_files:
+            if file_path in self.file_to_hash:
+                file_hash = self.file_to_hash[file_path]
+                num_dirs = len(self.hash_to_dirs.get(file_hash, set()))
+                if num_dirs > 1:
+                    duplicate_files += 1
+
+        # Calculate percentage - ensure we don't show 0% if there are duplicates
+        if duplicate_files > 0:
+            duplication_percent = (duplicate_files / total_files) * 100
+            # If percentage rounds to 0 but there are duplicates, show at least 0.01%
+            if duplication_percent < 0.01:
+                duplication_percent = 0.01
+        else:
+            duplication_percent = 0.0
+
+        return total_files, duplicate_files, duplication_percent
+
     def get_file_redundancy_count(self, file_path):
         """Get how many directories contain this file (based on hash)."""
         if file_path not in self.file_to_hash:
@@ -532,6 +567,29 @@ class DedupdirTUI:
         win.border()
         if self.active_pane == 'top':
             win.attroff(curses.A_BOLD)
+
+        # Show statistics in upper right corner
+        total_files, duplicate_files, duplication_percent = self.get_current_stats()
+
+        # Format the percentage carefully
+        if duplication_percent == 0.0:
+            percent_str = "0%"
+        elif duplication_percent < 0.01:
+            percent_str = "<0.01%"
+        elif duplication_percent < 1.0:
+            percent_str = f"{duplication_percent:.2f}%"
+        elif duplication_percent < 10.0:
+            percent_str = f"{duplication_percent:.1f}%"
+        else:
+            percent_str = f"{duplication_percent:.0f}%"
+
+        stats_text = f" {total_files} files | {duplicate_files} dupes | {percent_str} "
+        stats_x = width - len(stats_text) - 1
+        if stats_x > 2:  # Only show if there's room
+            try:
+                win.addstr(0, stats_x, stats_text, curses.A_DIM)
+            except curses.error:
+                pass
 
         # Determine which directories to show (filter if a file is selected)
         if self.selected_file:
