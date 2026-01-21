@@ -1,23 +1,23 @@
-# redundir
+# dedupdir
 
 A command-line utility that finds directories containing duplicate files and ranks them by redundancy.
 
-Includes both a CLI tool (`redundir`) and an interactive TUI (`redundir-tui`).
+Includes both a CLI tool (`dedupdir`) and an interactive TUI (`dedupdir-tui`).
 
 ## Installation
 
 ```sh
-curl -o ~/.local/bin/redundir https://raw.githubusercontent.com/USER/redundirs/main/redundir
-curl -o ~/.local/bin/redundir-tui https://raw.githubusercontent.com/USER/redundirs/main/redundir-tui
-chmod +x ~/.local/bin/redundir ~/.local/bin/redundir-tui
+curl -o ~/.local/bin/dedupdir https://raw.githubusercontent.com/bronson/dedupdir/main/dedupdir
+curl -o ~/.local/bin/dedupdir-tui https://raw.githubusercontent.com/bronson/dedupdir/main/dedupdir-tui
+chmod +x ~/.local/bin/dedupdir ~/.local/bin/dedupdir-tui
 ```
 
-Or just copy `redundir` and `redundir-tui` anywhere in your `$PATH`. Both scripts must be in the same directory. Requires Python 3.10+ with no external dependencies.
+Or just copy `dedupdir` and `dedupdir-tui` anywhere in your `$PATH`. Both scripts must be in the same directory. Requires Python 3.10+ with no external dependencies.
 
 ## CLI Usage
 
 ```
-redundir [directory...] [-a ALGORITHM] [-j N] [-v] [-q]
+dedupdir [directory...] [-a ALGORITHM] [-j N] [-v] [-q]
 ```
 
 | Option | Description |
@@ -32,7 +32,7 @@ redundir [directory...] [-a ALGORITHM] [-j N] [-v] [-q]
 
 **Single directory:**
 ```
-$ redundir ~/Documents
+$ dedupdir ~/Documents
 Scanning /home/user/Documents...
   Collecting files...
   Found 1523 files
@@ -47,7 +47,7 @@ Scanning /home/user/Documents...
 
 **Multiple directories (scanned together):**
 ```
-$ redundir ~/backups ~/archive ~/old-projects
+$ dedupdir ~/backups ~/archive ~/old-projects
 Scanning 3 directories...
   /home/user/backups
   /home/user/archive
@@ -71,7 +71,7 @@ When scanning multiple directories, duplicates are detected across all of them, 
 With `-v`, each directory shows related directories that share files with it, along with their **hypothetical redundancy** - the redundancy they would have if the current directory didn't exist:
 
 ```
-$ redundir ~/Documents -v
+$ dedupdir ~/Documents -v
 ...
 100.00%  4/4  backups/old
       0.00%  0/4  backups/new
@@ -82,10 +82,10 @@ This shows that if `backups/old` was removed, `backups/new` would have 0% redund
 
 ## Interactive TUI
 
-`redundir-tui` provides a split-pane interface for exploring duplicate files:
+`dedupdir-tui` provides a split-pane interface for exploring duplicate files:
 
 ```
-redundir-tui [directory...] [-a ALGORITHM] [-j N]
+dedupdir-tui [directory...] [-a ALGORITHM] [-j N]
 ```
 
 Supports scanning multiple directories just like the CLI tool.
@@ -108,26 +108,26 @@ Supports scanning multiple directories just like the CLI tool.
 - `←`/`h` or `Esc` - Go back / clear filter
 - `PgUp`/`PgDn` or `Ctrl-B`/`Ctrl-F` - Page up/down
 - `Home`/`End` or `<`/`>` - Jump to first/last item
-- `d` - Delete selected file or directory (moves to `~redundir-trash/` with confirmation for non-redundant items)
+- `d` - Delete selected file or directory (moves to `~dedupdir-trash/` with confirmation for non-redundant items)
 - `u` - Undo last deletion (progressively restores deleted items)
 - `t` - Toggle trash viewer (`r` to restore items, `t` or `Esc` to exit)
 - `q` - Quit
 
 ### Deletion & Cleanup
 
-The TUI includes a safe deletion system that moves files to `~redundir-trash/` (in each root directory) instead of permanently deleting them:
+The TUI includes a safe deletion system that moves files to `~dedupdir-trash/` (in each root directory) instead of permanently deleting them:
 
 - **Smart deletion**: Fully redundant items deleted immediately; non-redundant items require confirmation
 - **Progressive undo**: Press `u` repeatedly to undo recent deletions
 - **Trash viewer**: Press `t` to toggle trash view, restore with `r`, press `t` again to return
-- **Safe by design**: All items can be restored until you manually delete each root's `~redundir-trash/`
-- **Per-root trash**: Each root directory gets its own `~redundir-trash/` subdirectory (visible, not hidden)
+- **Safe by design**: All items can be restored until you manually delete each root's `~dedupdir-trash/`
+- **Per-root trash**: Each root directory gets its own `~dedupdir-trash/` subdirectory (visible, not hidden)
 
 
 
 **Example (single directory):**
 ```
-$ redundir-tui ~/Documents
+$ dedupdir-tui ~/Documents
 Scanning /home/user/Documents...
   Collecting files...
   Found 1523 total files
@@ -140,7 +140,7 @@ Scanning /home/user/Documents...
 
 **Example (multiple directories):**
 ```
-$ redundir-tui ~/backups ~/archive ~/old-stuff
+$ dedupdir-tui ~/backups ~/archive ~/old-stuff
 Scanning 3 directories...
   /home/user/backups
   /home/user/archive

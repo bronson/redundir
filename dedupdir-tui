@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-redundir-tui - Interactive TUI for exploring redundant directories
+dedupdir-tui - Interactive TUI for exploring redundant directories
 
 This provides a split-pane interface for browsing duplicate files:
 - Top pane: List of directories with redundancy scores
@@ -14,60 +14,60 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 
-# Import core functions from redundir by loading it directly
-def load_redundir():
-    """Load redundir module from same directory or PATH."""
+# Import core functions from dedupdir by loading it directly
+def load_dedupdir():
+    """Load dedupdir module from same directory or PATH."""
     import types
 
-    # Try to find redundir in same directory as this script
+    # Try to find dedupdir in same directory as this script
     # Check multiple possible locations
     possible_paths = [
-        Path(__file__).parent / "redundir",  # Same directory
-        Path.cwd() / "redundir",  # Current working directory
-        Path(sys.argv[0]).parent / "redundir",  # Script directory from argv
+        Path(__file__).parent / "dedupdir",  # Same directory
+        Path.cwd() / "dedupdir",  # Current working directory
+        Path(sys.argv[0]).parent / "dedupdir",  # Script directory from argv
     ]
 
-    for redundir_path in possible_paths:
-        if redundir_path.exists() and redundir_path.is_file():
+    for dedupdir_path in possible_paths:
+        if dedupdir_path.exists() and dedupdir_path.is_file():
             try:
                 # Read and execute the file directly since it has no .py extension
-                with open(redundir_path, 'r') as f:
+                with open(dedupdir_path, 'r') as f:
                     code = f.read()
 
                 # Create a module to hold the executed code
-                redundir = types.ModuleType('redundir')
-                redundir.__file__ = str(redundir_path)
-                sys.modules['redundir'] = redundir
+                dedupdir = types.ModuleType('dedupdir')
+                dedupdir.__file__ = str(dedupdir_path)
+                sys.modules['dedupdir'] = dedupdir
 
                 # Execute the code in the module's namespace
-                exec(code, redundir.__dict__)
+                exec(code, dedupdir.__dict__)
 
                 # Verify required functions exist
-                if hasattr(redundir, 'find_duplicates') and hasattr(redundir, 'calculate_redundancy_score'):
-                    return redundir
+                if hasattr(dedupdir, 'find_duplicates') and hasattr(dedupdir, 'calculate_redundancy_score'):
+                    return dedupdir
             except Exception as e:
-                print(f"Error loading {redundir_path}: {e}", file=sys.stderr)
+                print(f"Error loading {dedupdir_path}: {e}", file=sys.stderr)
                 continue
 
     # Try regular import as fallback
     try:
-        import redundir
-        return redundir
+        import dedupdir
+        return dedupdir
     except ImportError:
         pass
 
-    print("Error: Could not find redundir script", file=sys.stderr)
+    print("Error: Could not find dedupdir script", file=sys.stderr)
     print("Tried locations:", file=sys.stderr)
     for p in possible_paths:
         print(f"  {p} (exists: {p.exists()})", file=sys.stderr)
     sys.exit(1)
 
-redundir_module = load_redundir()
-find_duplicates = redundir_module.find_duplicates
-calculate_redundancy_score = redundir_module.calculate_redundancy_score
+dedupdir_module = load_dedupdir()
+find_duplicates = dedupdir_module.find_duplicates
+calculate_redundancy_score = dedupdir_module.calculate_redundancy_score
 
 
-class RedundirTUI:
+class DedupdirTUI:
     def __init__(self, root_paths, algorithm='blake2b', jobs=4):
         # Normalize to list
         if isinstance(root_paths, (str, Path)):
@@ -248,7 +248,7 @@ class RedundirTUI:
 
     def get_trash_dir_for_root(self, root_path):
         """Get the trash directory for a specific root."""
-        return root_path / '~redundir-trash'
+        return root_path / '~dedupdir-trash'
 
     def init_trash_dir_for_root(self, root_path):
         """Initialize trash directory for a specific root if it doesn't exist."""
@@ -759,7 +759,7 @@ class RedundirTUI:
         win.clear()
         win.border()
 
-        title = " Trash (~redundir-trash) - Press 'r' to restore, 't' to toggle back, Esc to exit "
+        title = " Trash (~dedupdir-trash) - Press 'r' to restore, 't' to toggle back, Esc to exit "
         win.addstr(0, 2, title[:width-4], curses.A_BOLD | curses.A_REVERSE)
 
         # Show "no duplicates" message if applicable
@@ -1328,7 +1328,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        prog='redundir-tui',
+        prog='dedupdir-tui',
         description='Interactive TUI for exploring redundant directories.'
     )
     parser.add_argument(
@@ -1366,7 +1366,7 @@ def main():
             sys.exit(1)
         roots.append(root)
 
-    tui = RedundirTUI(roots, algorithm=args.algorithm, jobs=args.jobs)
+    tui = DedupdirTUI(roots, algorithm=args.algorithm, jobs=args.jobs)
 
     # Scan with progress output before starting TUI
     if len(roots) == 1:

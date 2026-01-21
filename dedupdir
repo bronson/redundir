@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-redundir - Find directories containing duplicate files
+dedupdir - Find directories containing duplicate files
 
 This utility recursively walks a directory tree looking for directories
 containing duplicate files. It prints a list of directories found that
@@ -82,7 +82,7 @@ def find_duplicates(root_paths, algorithm: str = 'blake2b', jobs: int = 4, quiet
             dir_path = Path(dirpath)
 
             # Skip trash directories
-            dirnames[:] = [d for d in dirnames if d != '~redundir-trash']
+            dirnames[:] = [d for d in dirnames if d != '~dedupdir-trash']
 
             for filename in filenames:
                 file_path = dir_path / filename
@@ -181,7 +181,7 @@ def calculate_redundancy_score(duplicates: int, total: int) -> float:
 
 def main():
     parser = argparse.ArgumentParser(
-        prog='redundir',
+        prog='dedupdir',
         description='Find directories containing duplicate files and report redundancy scores.',
         epilog='The redundancy score is: (duplicate files in dir) / (total files in dir)'
     )
