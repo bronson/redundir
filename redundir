@@ -48,15 +48,15 @@ def _hash_file_worker(args):
     return filepath, hash_file(filepath, algorithm)
 
 
-def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, quiet: bool = False):
+def find_duplicates(root_paths, algorithm: str = 'blake2b', jobs: int = 4, quiet: bool = False):
     """
-    Walk directory tree and find directories with duplicate files.
+    Walk directory trees and find directories with duplicate files.
 
     A file is considered a duplicate if another file with the same content
-    (same hash) exists anywhere in the scanned tree.
+    (same hash) exists anywhere in the scanned trees.
 
     Args:
-        root_path: Root directory to scan
+        root_paths: Root directory or list of root directories to scan
         algorithm: Hash algorithm to use
         jobs: Number of parallel jobs for hashing
         quiet: If True, suppress progress information
@@ -64,30 +64,38 @@ def find_duplicates(root_path: Path, algorithm: str = 'blake2b', jobs: int = 4, 
     Returns:
         Tuple of (dir_stats, total_duplicates, total_files, file_to_hash, hash_to_dirs, dir_all_files)
     """
+    # Normalize to list
+    if isinstance(root_paths, Path):
+        root_paths = [root_paths]
+
     # First pass: collect all files and group by size
     size_groups: dict[int, list[Path]] = defaultdict(list)
     dir_all_files: dict[Path, list[Path]] = defaultdict(list)  # dir -> list of file paths
 
     file_count = 0
 
-    for dirpath, dirnames, filenames in os.walk(root_path):
-        dir_path = Path(dirpath)
+    if not quiet:
+        print(f"  Collecting files...", file=sys.stderr)
 
-        for filename in filenames:
-            file_path = dir_path / filename
+    for root_path in root_paths:
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            dir_path = Path(dirpath)
 
-            # Skip symlinks to avoid counting the same file multiple times
-            if file_path.is_symlink():
-                continue
+            for filename in filenames:
+                file_path = dir_path / filename
 
-            if file_path.is_file():
-                try:
-                    file_size = file_path.stat().st_size
-                    size_groups[file_size].append(file_path)
-                    dir_all_files[dir_path].append(file_path)
-                    file_count += 1
-                except (IOError, OSError):
+                # Skip symlinks to avoid counting the same file multiple times
+                if file_path.is_symlink():
                     continue
+
+                if file_path.is_file():
+                    try:
+                        file_size = file_path.stat().st_size
+                        size_groups[file_size].append(file_path)
+                        dir_all_files[dir_path].append(file_path)
+                        file_count += 1
+                    except (IOError, OSError):
+                        continue
 
     if not quiet:
         print(f"  Found {file_count} total files", file=sys.stderr)
@@ -175,10 +183,11 @@ def main():
         epilog='The redundancy score is: (duplicate files in dir) / (total files in dir)'
     )
     parser.add_argument(
-        'directory',
-        nargs='?',
-        default='.',
-        help='Directory to scan (default: current directory)'
+        'directories',
+        nargs='*',
+        default=['.'],
+        metavar='directory',
+        help='Directories to scan (default: current directory)'
     )
     parser.add_argument(
         '-a', '--algorithm',
@@ -206,20 +215,28 @@ def main():
 
     args = parser.parse_args()
 
-    root = Path(args.directory).resolve()
-
-    if not root.exists():
-        print(f"Error: '{args.directory}' does not exist", file=sys.stderr)
-        sys.exit(1)
-
-    if not root.is_dir():
-        print(f"Error: '{args.directory}' is not a directory", file=sys.stderr)
-        sys.exit(1)
+    # Handle both single directory (backward compat) and multiple directories
+    roots = []
+    for directory in args.directories:
+        root = Path(directory).resolve()
+        if not root.exists():
+            print(f"Error: '{directory}' does not exist", file=sys.stderr)
+            sys.exit(1)
+        if not root.is_dir():
+            print(f"Error: '{directory}' is not a directory", file=sys.stderr)
+            sys.exit(1)
+        roots.append(root)
 
     if not args.quiet:
-        print(f"Scanning {root}...", file=sys.stderr)
+        if len(roots) == 1:
+            print(f"Scanning {roots[0]}...", file=sys.stderr)
+        else:
+            print(f"Scanning {len(roots)} directories...", file=sys.stderr)
+            for root in roots:
+                print(f"  {root}", file=sys.stderr)
 
-    dir_stats, total_duplicates, total_files, file_to_hash, hash_to_dirs, dir_all_files = find_duplicates(root, algorithm=args.algorithm, jobs=args.jobs, quiet=args.quiet)
+    # Scan all directories together (find_duplicates handles multiple roots)
+    dir_stats, total_duplicates, total_files, file_to_hash, hash_to_dirs, dir_all_files = find_duplicates(roots, algorithm=args.algorithm, jobs=args.jobs, quiet=args.quiet)
 
     # Print summary before results
     if not args.quiet:
@@ -246,12 +263,17 @@ def main():
 
     for dir_path, (duplicates, total) in sorted_dirs:
         score = calculate_redundancy_score(duplicates, total)
-        # Convert to relative path from root
-        try:
-            relative_path = dir_path.relative_to(root)
-            display_path = relative_path if str(relative_path) != '.' else '.'
-        except ValueError:
-            # If path is not relative to root, use absolute
+        # Convert to relative path from one of the roots
+        display_path = None
+        for root in roots:
+            try:
+                relative_path = dir_path.relative_to(root)
+                display_path = str(root.name / relative_path) if str(relative_path) != '.' else str(root.name)
+                break
+            except ValueError:
+                continue
+        if display_path is None:
+            # If path is not relative to any root, use absolute
             display_path = dir_path
 
         count_str = f"{duplicates}/{total}"

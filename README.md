@@ -17,19 +17,20 @@ Or just copy `redundir` and `redundir-tui` anywhere in your `$PATH`. Both script
 ## CLI Usage
 
 ```
-redundir [directory] [-a ALGORITHM] [-j N] [-v] [-q]
+redundir [directory...] [-a ALGORITHM] [-j N] [-v] [-q]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `directory` | Directory to scan (default: `.`) |
+| `directory` | Directory or directories to scan (default: `.`) |
 | `-a, --algorithm` | Hash algorithm: `md5`, `sha1`, `sha256`, `blake2b`, `blake2s` (default: `blake2b`) |
 | `-j, --jobs` | Number of parallel hashing jobs (default: `4`, use `1` to disable) |
 | `-v, --verbose` | Show related directories and hypothetical redundancy scores |
 | `-q, --quiet` | Suppress progress messages |
 
-## Example
+## Examples
 
+**Single directory:**
 ```
 $ redundir ~/Documents
 Scanning /home/user/Documents...
@@ -43,6 +44,27 @@ Scanning /home/user/Documents...
  75.00%  3/4  photos/2023
  66.67%  2/3  projects/archive
 ```
+
+**Multiple directories (scanned together):**
+```
+$ redundir ~/backups ~/archive ~/old-projects
+Scanning 3 directories...
+  /home/user/backups
+  /home/user/archive
+  /home/user/old-projects
+  Collecting files...
+  Found 2847 files
+  Hashing 892 files, skipping 1955 files with unique sizes
+  Hashed 892 files
+  Found 456 duplicate files in 12 directories (overall redundancy: 16.02%)
+
+100.00%  24/24  backups/2023
+ 87.50%  14/16  archive/photos
+ 75.00%   9/12  old-projects/website
+...
+```
+
+When scanning multiple directories, duplicates are detected across all of them, making it easy to find redundancy between separate backup locations or project directories.
 
 ### Verbose Mode
 
