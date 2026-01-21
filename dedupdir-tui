@@ -871,24 +871,24 @@ class DedupdirTUI:
             return 'binary'
 
     def get_file_content_for_viewing(self, file_path):
-        """Get file content/info for viewing. Returns (lines, file_type)."""
+        """Get file content/info for viewing. Returns (metadata_lines, content_lines, file_type)."""
         file_type = self.get_file_type(file_path)
-        lines = []
+        metadata_lines = []
+        content_lines = []
 
         try:
             file_size = file_path.stat().st_size
             size_mb = file_size / (1024 * 1024)
 
-            # Add header with file info
-            lines.append(f"File: {file_path.name}")
-            lines.append(f"Path: {file_path}")
-            lines.append(f"Size: {file_size:,} bytes ({size_mb:.2f} MB)")
-            lines.append("")
+            # Add header with file info (metadata)
+            metadata_lines.append(f"File: {file_path.name}")
+            metadata_lines.append(f"Path: {file_path}")
+            metadata_lines.append(f"Size: {file_size:,} bytes ({size_mb:.2f} MB)")
+            metadata_lines.append(f"Type: {file_type.upper()}")
 
             if file_type == 'image':
                 # Try to get EXIF data or image info
-                lines.append("=== IMAGE FILE ===")
-                lines.append("")
+                content_lines.append("")
 
                 # Try exiftool first
                 try:
@@ -896,7 +896,7 @@ class DedupdirTUI:
                     result = subprocess.run(['exiftool', str(file_path)],
                                           capture_output=True, text=True, timeout=5)
                     if result.returncode == 0:
-                        lines.extend(result.stdout.splitlines())
+                        content_lines.extend(result.stdout.splitlines())
                     else:
                         raise Exception("exiftool failed")
                 except:
@@ -905,18 +905,16 @@ class DedupdirTUI:
                         result = subprocess.run(['identify', '-verbose', str(file_path)],
                                               capture_output=True, text=True, timeout=5)
                         if result.returncode == 0:
-                            lines.extend(result.stdout.splitlines())
+                            content_lines.extend(result.stdout.splitlines())
                         else:
                             raise Exception("identify failed")
                     except:
                         # Just show basic info
-                        lines.append("(No image tools available - install exiftool or ImageMagick for details)")
-                        lines.append("")
-                        lines.append("This is an image file. Use an image viewer to see it.")
+                        content_lines.append("(No image tools available - install exiftool or ImageMagick for details)")
+                        content_lines.append("")
+                        content_lines.append("This is an image file. Use an image viewer to see it.")
 
             elif file_type == 'text':
-                lines.append("=== TEXT FILE ===")
-                lines.append("")
 
                 # Limit reading to 10MB for text files
                 max_bytes = 10 * 1024 * 1024
@@ -925,15 +923,13 @@ class DedupdirTUI:
                     bytes_read = 0
                     for line_num, line in enumerate(f, 1):
                         if bytes_read >= max_bytes:
-                            lines.append("")
-                            lines.append(f"... (file truncated at {max_bytes:,} bytes, showing first ~{line_num} lines)")
+                            content_lines.append("")
+                            content_lines.append(f"... (file truncated at {max_bytes:,} bytes, showing first ~{line_num} lines)")
                             break
-                        lines.append(line.rstrip('\n\r'))
+                        content_lines.append(line.rstrip('\n\r'))
                         bytes_read += len(line.encode('utf-8'))
 
             else:  # binary
-                lines.append("=== BINARY FILE ===")
-                lines.append("")
 
                 # Show hex dump of first 4KB
                 max_bytes = 4096
@@ -945,16 +941,16 @@ class DedupdirTUI:
                     chunk = data[i:i+16]
                     hex_part = ' '.join(f'{b:02x}' for b in chunk)
                     ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in chunk)
-                    lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
+                    content_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
 
                 if file_size > max_bytes:
-                    lines.append("")
-                    lines.append(f"... (showing first {max_bytes:,} of {file_size:,} bytes)")
+                    content_lines.append("")
+                    content_lines.append(f"... (showing first {max_bytes:,} of {file_size:,} bytes)")
 
         except Exception as e:
-            lines.append(f"Error reading file: {e}")
+            content_lines.append(f"Error reading file: {e}")
 
-        return lines, file_type
+        return metadata_lines, content_lines, file_type
 
     def draw_file_viewer(self, stdscr, file_path, scroll_offset):
         """Draw file viewer as centered overlay window (75% width, 85% height)."""
@@ -976,36 +972,53 @@ class DedupdirTUI:
         viewer_win.addstr(0, 2, title[:width-4], curses.A_BOLD | curses.A_REVERSE)
 
         # Get content
-        lines, file_type = self.get_file_content_for_viewing(file_path)
+        metadata_lines, content_lines, file_type = self.get_file_content_for_viewing(file_path)
 
-        # Calculate visible area
-        visible_height = height - 2
-        max_offset = max(0, len(lines) - visible_height)
+        # Draw metadata section (fixed, not scrollable, in dim color)
+        metadata_height = len(metadata_lines)
+        for i, line in enumerate(metadata_lines):
+            display_line = line[:width-3]
+            try:
+                viewer_win.addstr(1 + i, 1, display_line, curses.A_DIM)
+            except curses.error:
+                pass
+
+        # Draw separator line
+        separator_y = 1 + metadata_height
+        try:
+            viewer_win.addstr(separator_y, 1, "─" * (width - 2))
+        except curses.error:
+            pass
+
+        # Calculate visible area for content (below metadata and separator)
+        content_start_y = separator_y + 1
+        content_height = height - content_start_y - 1  # -1 for bottom border
+        max_offset = max(0, len(content_lines) - content_height)
         scroll_offset = max(0, min(scroll_offset, max_offset))
 
-        # Draw lines
-        for i in range(visible_height):
+        # Draw content lines (scrollable)
+        for i in range(content_height):
             line_idx = scroll_offset + i
-            if line_idx < len(lines):
-                line = lines[line_idx]
+            if line_idx < len(content_lines):
+                line = content_lines[line_idx]
                 # Truncate line to fit width
                 display_line = line[:width-3]
                 try:
-                    viewer_win.addstr(1 + i, 1, display_line)
+                    viewer_win.addstr(content_start_y + i, 1, display_line)
                 except curses.error:
                     pass  # Ignore errors from writing to last position
 
         # Draw scrollbar indicator if needed
-        if len(lines) > visible_height:
+        if len(content_lines) > content_height:
             percent = (scroll_offset / max_offset * 100) if max_offset > 0 else 0
-            status = f" {percent:.0f}% ({scroll_offset + 1}-{min(scroll_offset + visible_height, len(lines))} of {len(lines)}) "
+            status = f" {percent:.0f}% ({scroll_offset + 1}-{min(scroll_offset + content_height, len(content_lines))} of {len(content_lines)}) "
             try:
                 viewer_win.addstr(height - 1, width - len(status) - 2, status, curses.A_REVERSE)
             except curses.error:
                 pass
 
         viewer_win.refresh()
-        return scroll_offset, len(lines)
+        return scroll_offset, len(content_lines)
 
     def draw_confirmation_dialog(self, stdscr, message):
         """Draw a confirmation dialog in the center of the screen."""
