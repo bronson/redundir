@@ -499,7 +499,7 @@ class RedundirTUI:
                 continue
 
             # Return key or Right arrow - context-sensitive drill down
-            if key in (ord('\n'), ord('\r'), curses.KEY_ENTER, curses.KEY_RIGHT):
+            if key in (ord('\n'), ord('\r'), curses.KEY_ENTER, curses.KEY_RIGHT, ord('l')):
                 if self.active_pane == 'top':
                     # Switch to bottom pane
                     self.active_pane = 'bottom'
@@ -559,14 +559,14 @@ class RedundirTUI:
                 continue
 
             # Escape key or Left arrow - context-sensitive behavior
-            if key in (27, curses.KEY_LEFT):  # ESC or Left arrow
+            if key in (27, curses.KEY_LEFT, ord('h')):  # ESC or Left arrow
                 if self.active_pane == 'bottom':
                     # Just switch to top pane, keep the filter if any
                     self.active_pane = 'top'
                     self.show_quit_message = False
                 else:  # top pane
                     # Left arrow in top pane - pop from navigation stack if available
-                    if key == curses.KEY_LEFT and self.navigation_stack:
+                    if key in (curses.KEY_LEFT, ord('h')) and self.navigation_stack:
                         nav_state = self.navigation_stack.pop()
                         if isinstance(nav_state, dict):
                             self.selected_idx = nav_state.get('selected_idx', 0)
