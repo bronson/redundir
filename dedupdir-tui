@@ -1213,12 +1213,13 @@ Actions:
 
         # Draw hint bar
         try:
-            # Clear the line first
-            stdscr.addstr(height - 1, 0, " " * width, curses.A_DIM)
+            # Clear the line first with normal color, then draw text
+            stdscr.addstr(height - 1, 0, " " * (width - 1))
             # Draw hints on left
             stdscr.addstr(height - 1, 1, hint_text, curses.A_DIM)
             # Draw help on right
             stdscr.addstr(height - 1, width - len(help_text) - 1, help_text, curses.A_DIM)
+            stdscr.refresh()  # Explicitly refresh to ensure hint bar is visible
         except curses.error:
             pass  # Ignore errors at edge of screen
 
@@ -1299,19 +1300,22 @@ Actions:
             height, width = stdscr.getmaxyx()
 
             # Draw based on current mode
+            # Reserve last line for hint bar
+            usable_height = height - 1
+
             if self.viewing_trash:
                 # Trash viewer mode - draw main screen first, then overlay
-                top_height = max(5, height * 2 // 5)
-                bottom_height = height - top_height
+                top_height = max(5, usable_height * 2 // 5)
+                bottom_height = usable_height - top_height
                 top_win = curses.newwin(top_height, width, 0, 0)
                 bottom_win = curses.newwin(bottom_height, width, top_height, 0)
                 self.draw_top_pane(top_win, top_height, width)
                 self.draw_bottom_pane(bottom_win, bottom_height, width)
 
                 # Draw trash viewer as centered overlay (85% width, 92% height)
-                trash_height = int(height * 0.92)
+                trash_height = int(usable_height * 0.92)
                 trash_width = int(width * 0.85)
-                trash_y = (height - trash_height) // 2
+                trash_y = (usable_height - trash_height) // 2
                 trash_x = (width - trash_width) // 2
                 trash_win = curses.newwin(trash_height, trash_width, trash_y, trash_x)
                 self.draw_trash_pane(trash_win, trash_height, trash_width)
@@ -1320,8 +1324,8 @@ Actions:
                 self.draw_hint_bar(stdscr, 'trash')
             elif self.confirm_delete_item is not None:
                 # Confirmation dialog mode - draw normal panes + dialog
-                top_height = max(5, height * 2 // 5)
-                bottom_height = height - top_height
+                top_height = max(5, usable_height * 2 // 5)
+                bottom_height = usable_height - top_height
                 top_win = curses.newwin(top_height, width, 0, 0)
                 bottom_win = curses.newwin(bottom_height, width, top_height, 0)
                 self.draw_top_pane(top_win, top_height, width)
@@ -1335,8 +1339,8 @@ Actions:
                 self.draw_hint_bar(stdscr, 'confirm')
             else:
                 # Normal mode - split screen
-                top_height = max(5, height * 2 // 5)
-                bottom_height = height - top_height
+                top_height = max(5, usable_height * 2 // 5)
+                bottom_height = usable_height - top_height
                 top_win = curses.newwin(top_height, width, 0, 0)
                 bottom_win = curses.newwin(bottom_height, width, top_height, 0)
                 self.draw_top_pane(top_win, top_height, width)

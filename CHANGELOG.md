@@ -3,7 +3,8 @@
 ## [0.1.0] - 2026-01-XX
 * rename project from redundir to dedupdir
   * the previous name implied that we want to make things more redundant
-* tui: Add the '?' keystroke to bring up a help screen anywher.
+* tui: Add the '?' keystroke to bring up a help screen anywhere.
+* tui: Add a hint bar that shows the most common keystrokes.
 * tui: Add 'v' key to view file contents within the app.
 * tui: Fix terminal resize handling. No more blank screen.
 
