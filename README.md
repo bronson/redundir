@@ -85,8 +85,10 @@ This shows that if `backups/old` was removed, `backups/new` would have 0% redund
 `redundir-tui` provides a split-pane interface for exploring duplicate files:
 
 ```
-redundir-tui [directory] [-a ALGORITHM] [-j N]
+redundir-tui [directory...] [-a ALGORITHM] [-j N]
 ```
+
+Supports scanning multiple directories just like the CLI tool.
 
 **Features:**
 - **Progress display**: Shows scanning progress before starting the TUI (just like CLI)
@@ -108,10 +110,11 @@ redundir-tui [directory] [-a ALGORITHM] [-j N]
 - `Home`/`End` or `<`/`>` - Jump to first/last item
 - `q` - Quit
 
-**Example:**
+**Example (single directory):**
 ```
 $ redundir-tui ~/Documents
 Scanning /home/user/Documents...
+  Collecting files...
   Found 1523 total files
   Hashing 412 files, skipping 1111 files with unique sizes
   Hashed 412 files
@@ -120,7 +123,23 @@ Scanning /home/user/Documents...
 [Interactive TUI starts here with split panes]
 ```
 
-The TUI shows full progress information during scanning, then starts the interactive interface where you can explore which directories share files and see exactly which files are duplicated.
+**Example (multiple directories):**
+```
+$ redundir-tui ~/backups ~/archive ~/old-stuff
+Scanning 3 directories...
+  /home/user/backups
+  /home/user/archive
+  /home/user/old-stuff
+  Collecting files...
+  Found 3421 total files
+  Hashing 892 files, skipping 2529 files with unique sizes
+  Hashed 892 files
+  Found 456 duplicate files in 15 directories (overall redundancy: 13.33%)
+
+[Interactive TUI starts here with split panes]
+```
+
+The TUI shows full progress information during scanning, then starts the interactive interface where you can explore which directories share files and see exactly which files are duplicated. When scanning multiple directories, duplicates are detected across all of them.
 
 ## How It Works
 

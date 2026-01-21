@@ -66,8 +66,11 @@ calculate_redundancy_score = redundir_module.calculate_redundancy_score
 
 
 class RedundirTUI:
-    def __init__(self, root_path, algorithm='blake2b', jobs=4):
-        self.root_path = Path(root_path).resolve()
+    def __init__(self, root_paths, algorithm='blake2b', jobs=4):
+        # Normalize to list
+        if isinstance(root_paths, (str, Path)):
+            root_paths = [root_paths]
+        self.root_paths = [Path(p).resolve() for p in root_paths]
         self.algorithm = algorithm
         self.jobs = jobs
         self.selected_idx = 0
@@ -91,7 +94,7 @@ class RedundirTUI:
     def scan(self, quiet=False):
         """Scan the directory tree for duplicates."""
         result = find_duplicates(
-            self.root_path,
+            self.root_paths,
             algorithm=self.algorithm,
             jobs=self.jobs,
             quiet=quiet
@@ -107,11 +110,16 @@ class RedundirTUI:
 
     def get_relative_path(self, path):
         """Convert absolute path to relative display path."""
-        try:
-            rel = path.relative_to(self.root_path)
-            return str(rel) if str(rel) != '.' else '.'
-        except ValueError:
-            return str(path)
+        # Try each root path
+        for root_path in self.root_paths:
+            try:
+                rel = path.relative_to(root_path)
+                display = str(root_path.name / rel) if str(rel) != '.' else str(root_path.name)
+                return display
+            except ValueError:
+                continue
+        # If not relative to any root, use absolute path
+        return str(path)
 
     def get_related_dirs(self, dir_path):
         """Get related directories and their hypothetical redundancy scores."""
@@ -573,10 +581,11 @@ def main():
         description='Interactive TUI for exploring redundant directories.'
     )
     parser.add_argument(
-        'directory',
-        nargs='?',
-        default='.',
-        help='Directory to scan (default: current directory)'
+        'directories',
+        nargs='*',
+        default=['.'],
+        metavar='directory',
+        help='Directories to scan (default: current directory)'
     )
     parser.add_argument(
         '-a', '--algorithm',
@@ -594,20 +603,27 @@ def main():
 
     args = parser.parse_args()
 
-    root = Path(args.directory).resolve()
+    # Handle both single directory and multiple directories
+    roots = []
+    for directory in args.directories:
+        root = Path(directory).resolve()
+        if not root.exists():
+            print(f"Error: '{directory}' does not exist", file=sys.stderr)
+            sys.exit(1)
+        if not root.is_dir():
+            print(f"Error: '{directory}' is not a directory", file=sys.stderr)
+            sys.exit(1)
+        roots.append(root)
 
-    if not root.exists():
-        print(f"Error: '{args.directory}' does not exist", file=sys.stderr)
-        sys.exit(1)
-
-    if not root.is_dir():
-        print(f"Error: '{args.directory}' is not a directory", file=sys.stderr)
-        sys.exit(1)
-
-    tui = RedundirTUI(root, algorithm=args.algorithm, jobs=args.jobs)
+    tui = RedundirTUI(roots, algorithm=args.algorithm, jobs=args.jobs)
 
     # Scan with progress output before starting TUI
-    print(f"Scanning {root}...")
+    if len(roots) == 1:
+        print(f"Scanning {roots[0]}...")
+    else:
+        print(f"Scanning {len(roots)} directories...")
+        for root in roots:
+            print(f"  {root}")
     tui.scan(quiet=False)
 
     if not tui.sorted_dirs:
