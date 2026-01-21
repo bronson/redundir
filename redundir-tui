@@ -116,9 +116,24 @@ class RedundirTUI:
         self.dir_stats, self.total_duplicates, self.total_files, \
             self.file_to_hash, self.hash_to_dirs, self.dir_all_files = result
 
+        # Recalculate sorted_dirs with all directories
+        self.recalculate_sorted_dirs()
+
+    def recalculate_sorted_dirs(self):
+        """Recalculate sorted_dirs including ALL directories, even those with 0% redundancy."""
+        all_dirs_with_stats = []
+        for dir_path, files in self.dir_all_files.items():
+            if dir_path in self.dir_stats:
+                # Directory has duplicates
+                all_dirs_with_stats.append((dir_path, self.dir_stats[dir_path]))
+            else:
+                # Directory has no duplicates - add with 0/N stats
+                total_files = len(files)
+                all_dirs_with_stats.append((dir_path, (0, total_files)))
+
         # Sort directories by redundancy score
         self.sorted_dirs = sorted(
-            self.dir_stats.items(),
+            all_dirs_with_stats,
             key=lambda x: (-calculate_redundancy_score(x[1][0], x[1][1]), str(x[0]))
         )
 
@@ -360,11 +375,8 @@ class RedundirTUI:
         else:  # directory
             self.remove_directory_from_data(item_path)
 
-        # Recalculate sorted_dirs
-        self.sorted_dirs = sorted(
-            self.dir_stats.items(),
-            key=lambda x: (-calculate_redundancy_score(x[1][0], x[1][1]), str(x[0]))
-        )
+        # Recalculate sorted_dirs with all directories
+        self.recalculate_sorted_dirs()
 
         return True
 
@@ -530,7 +542,7 @@ class RedundirTUI:
         else:
             # Show all directories with redundancy
             filtered_dirs = self.sorted_dirs
-            title = f" Directories with Redundancy ({len(filtered_dirs)}) "
+            title = f" All Directories ({len(filtered_dirs)}) "
 
         # Store filtered dirs for navigation
         self.current_filtered_dirs = filtered_dirs
@@ -569,14 +581,30 @@ class RedundirTUI:
             rel_path = self.get_relative_path(dir_path)
 
             # Format line - include filename if filtering by file
-            percent_str = f"{score:7.2%}"
-            count_str = f"{duplicates}/{total}".rjust(max_count_width)
             if self.selected_file:
                 # Show directory/filename when filtering
                 # Get the actual filename in this directory (may differ from selected file's name)
                 actual_filename = self.get_filename_in_dir(self.selected_file, dir_path)
+
+                # Get file-specific stats: how many directories contain this file
+                file_hash = self.file_to_hash.get(self.selected_file)
+                if file_hash:
+                    num_dirs_with_file = len(self.hash_to_dirs.get(file_hash, set()))
+                    # Calculate redundancy: redundant copies / total copies
+                    # (if file appears in 3 dirs, 2 are redundant copies, 1 is "original")
+                    redundant_copies = max(0, num_dirs_with_file - 1)
+                    file_score = calculate_redundancy_score(redundant_copies, num_dirs_with_file)
+                    percent_str = f"{file_score:7.2%}"
+                    count_str = f"{redundant_copies}/{num_dirs_with_file}".rjust(max_count_width)
+                else:
+                    percent_str = "  0.00%"
+                    count_str = "0/1".rjust(max_count_width)
+
                 line = f"{percent_str}  {count_str}  {rel_path}/{actual_filename}"
             else:
+                # Show directory stats when not filtering
+                percent_str = f"{score:7.2%}"
+                count_str = f"{duplicates}/{total}".rjust(max_count_width)
                 line = f"{percent_str}  {count_str}  {rel_path}"
 
             # Truncate if too long
