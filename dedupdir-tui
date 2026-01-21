@@ -945,6 +945,12 @@ class DedupdirTUI:
             # Handle input
             key = stdscr.getch()
 
+            # Handle terminal resize
+            if key == curses.KEY_RESIZE:
+                stdscr.clear()
+                stdscr.refresh()
+                continue
+
             # Handle confirmation dialog first (takes priority)
             if self.confirm_delete_item is not None:
                 if key in (ord('q'), ord('Q')):  # Q key - quit immediately
