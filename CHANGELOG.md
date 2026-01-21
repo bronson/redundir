@@ -7,6 +7,7 @@
 * tui: Add a hint bar that shows the most common keystrokes.
 * tui: Add 'v' key to view file contents within the app.
 * tui: Add 'o' key to open the. file in the platform's viewer
+* tui: Remove any mention of 'deleting' files. We only Trash them.
 * tui: Fix terminal resize handling. No more blank screen.
 
 [0.1.0]: https://github.com/bronson/dedupdir/releases/tag/v0.1.0
