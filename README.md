@@ -111,8 +111,14 @@ Supports scanning multiple directories just like the CLI tool.
 - `v` - View selected file (text files, images with EXIF data, or hex dump for binaries)
 - `d` - Delete selected file or directory (moves to `~dedupdir-trash/` with confirmation for non-redundant items)
 - `u` - Undo last deletion (progressively restores deleted items)
-- `t` - Toggle trash viewer (`r` to restore items, `t` or `Esc` to exit)
+- `t` - Toggle trash viewer (`r` to restore items, `v` to view, `t` or `Esc` to exit)
+- `?` - Show context-sensitive help
 - `q` - Quit
+
+**Help System:**
+- A **hint bar** at the bottom of the screen shows the most common commands for the current mode
+- Press `?` at any time to show detailed **context-sensitive help** for what you're doing
+- Help is available in all modes: main view, trash viewer, file viewer, and confirmation dialogs
 
 ### Deletion & Cleanup
 
