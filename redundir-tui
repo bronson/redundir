@@ -1102,8 +1102,10 @@ class RedundirTUI:
             # Escape key or Left arrow - context-sensitive behavior
             if key in (27, curses.KEY_LEFT, ord('h')):  # ESC or Left arrow
                 if self.active_pane == 'bottom':
-                    # Just switch to top pane, keep the filter if any
+                    # Switch to top pane and clear filter (show all directories)
                     self.active_pane = 'top'
+                    self.selected_file = None
+                    self.navigation_stack = []  # Clear navigation stack
                     self.show_quit_message = False
                 else:  # top pane
                     # Left arrow in top pane - pop from navigation stack if available
@@ -1189,7 +1191,17 @@ class RedundirTUI:
                         self.confirm_delete_type = delete_type
                     else:
                         # Delete immediately
+                        was_in_bottom_pane = (self.active_pane == 'bottom' and delete_type == 'file')
                         self.delete_item(item_to_delete, delete_type)
+
+                        # After deletion, clear navigation stack so left arrow works correctly
+                        self.navigation_stack = []
+
+                        # If we deleted a file from bottom pane, the filter needs updating
+                        # The bottom_line_to_file mapping is stale, so just clear the filter
+                        # It will be rebuilt on next draw with the new file list
+                        if was_in_bottom_pane:
+                            self.selected_file = None
                 continue
             elif key in (curses.KEY_UP, ord('k')):
                 self.show_quit_message = False
@@ -1209,12 +1221,11 @@ class RedundirTUI:
                             # Adjust bottom offset if needed
                             if self.bottom_selected_idx < self.bottom_offset:
                                 self.bottom_offset = self.bottom_selected_idx
-                            # Update file filter based on new selection (don't change selected_idx)
+                            # Update file filter based on new selection
                             if hasattr(self, 'bottom_line_to_file') and self.bottom_selected_idx in self.bottom_line_to_file:
                                 self.selected_file = self.bottom_line_to_file[self.bottom_selected_idx]
                             else:
                                 self.selected_file = None
-                            # Don't change selected_idx or current_bottom_dir - just update the filter display
             elif key in (curses.KEY_DOWN, ord('j')):
                 self.show_quit_message = False
                 if self.active_pane == 'top':
@@ -1237,12 +1248,11 @@ class RedundirTUI:
                             display_height = bottom_height - 2
                             if self.bottom_selected_idx >= self.bottom_offset + display_height:
                                 self.bottom_offset = self.bottom_selected_idx - display_height + 1
-                            # Update file filter based on new selection (don't change selected_idx)
+                            # Update file filter based on new selection
                             if hasattr(self, 'bottom_line_to_file') and self.bottom_selected_idx in self.bottom_line_to_file:
                                 self.selected_file = self.bottom_line_to_file[self.bottom_selected_idx]
                             else:
                                 self.selected_file = None
-                            # Don't change selected_idx or current_bottom_dir - just update the filter display
             elif key == curses.KEY_PPAGE:  # Page Up
                 self.show_quit_message = False
                 if self.active_pane == 'top':
