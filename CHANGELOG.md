@@ -3,6 +3,7 @@
 ## [0.2.XX] - 2026-XX
 * convert the two-pane UI back to single-pane and simplify the file view
 * automatically collapse child dirs when they're 100% redundant
+* add automatic caching to speed up subsequent runs
 * confirm quitting unless you're at the top level
 * add scroll indicators to panes
 

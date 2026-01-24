@@ -12,6 +12,8 @@ import curses
 import sys
 import os
 import shutil
+import threading
+import queue
 from pathlib import Path
 from datetime import datetime
 
@@ -66,6 +68,8 @@ def load_dedupdir():
 dedupdir_module = load_dedupdir()
 find_duplicates = dedupdir_module.find_duplicates
 calculate_redundancy_score = dedupdir_module.calculate_redundancy_score
+hash_file = dedupdir_module.hash_file
+CACHE_FILE_NAME = dedupdir_module.CACHE_FILE_NAME
 
 
 class DedupdirTUI:
@@ -111,6 +115,14 @@ class DedupdirTUI:
         self.total_duplicates = 0
         self.total_files = 0
 
+        # Background verification state
+        self.cached_hashes = {}  # file_path -> hash for files loaded from cache
+        self.verification_thread = None
+        self.verification_error = None  # Set if verification fails
+        self.verification_queue = queue.Queue()  # For communicating errors from thread
+        self.verification_complete = False
+        self.verification_progress = (0, 0)  # (verified, total)
+
     def scan(self, quiet=False):
         """Scan the directory tree for duplicates."""
         result = find_duplicates(
@@ -120,11 +132,67 @@ class DedupdirTUI:
             quiet=quiet
         )
         self.dir_stats, self.total_duplicates, self.total_files, \
-            self.file_to_hash, self.hash_to_dirs, self.dir_all_files = result
+            self.file_to_hash, self.hash_to_dirs, self.dir_all_files, \
+            self.cached_hashes = result
 
         # Recalculate sorted_dirs with all directories
         self.recalculate_sorted_dirs()
         self.invalidate_display_cache()
+
+        # Start background verification if we used cached data
+        if self.cached_hashes:
+            self.start_background_verification()
+
+    def start_background_verification(self):
+        """Start a background thread to verify cached hashes."""
+        if not self.cached_hashes:
+            self.verification_complete = True
+            return
+
+        self.verification_progress = (0, len(self.cached_hashes))
+
+        def verify_worker():
+            """Background worker that verifies cached hashes one at a time."""
+            files_to_verify = list(self.cached_hashes.items())
+            total = len(files_to_verify)
+            verified = 0
+
+            for fpath, expected_hash in files_to_verify:
+                verified += 1
+                self.verification_progress = (verified, total)
+
+                try:
+                    actual_hash = hash_file(fpath, self.algorithm)
+                    if actual_hash is None:
+                        # File unreadable - skip
+                        continue
+                    if actual_hash != expected_hash:
+                        error_msg = f"Cache verification failed!\n\nFile: {fpath}\nExpected: {expected_hash[:16]}...\nActual: {actual_hash[:16]}...\n\nThe file was modified but the cache wasn't updated.\nRemove {CACHE_FILE_NAME} files and restart."
+                        self.verification_queue.put(('error', error_msg))
+                        return
+                except Exception:
+                    # Skip files that can't be read
+                    continue
+
+            # Verification complete with no errors
+            self.verification_queue.put(('complete', None))
+
+        self.verification_thread = threading.Thread(target=verify_worker, daemon=True)
+        self.verification_thread.start()
+
+    def check_verification_status(self):
+        """Check for verification errors from background thread. Returns error message or None."""
+        try:
+            while True:
+                msg_type, msg_data = self.verification_queue.get_nowait()
+                if msg_type == 'error':
+                    self.verification_error = msg_data
+                    return msg_data
+                elif msg_type == 'complete':
+                    self.verification_complete = True
+        except queue.Empty:
+            pass
+        return None
 
     def recalculate_sorted_dirs(self):
         """Recalculate sorted_dirs including ALL directories, even those with 0% redundancy."""
@@ -1684,8 +1752,16 @@ Actions:
         hint_text = self.get_hint_text(mode)
         help_text = "[?] Help"
 
+        # Add verification status if running
+        verify_text = ""
+        if self.cached_hashes and not self.verification_complete and not self.verification_error:
+            verified, total = self.verification_progress
+            if total > 0:
+                percent = (verified * 100) // total
+                verify_text = f" [Verifying: {percent}%]"
+
         # Calculate positions
-        available_width = width - len(help_text) - 3  # -3 for spacing
+        available_width = width - len(help_text) - len(verify_text) - 4  # -4 for spacing
         if len(hint_text) > available_width:
             hint_text = hint_text[:available_width-3] + "..."
 
@@ -1695,11 +1771,69 @@ Actions:
             stdscr.addstr(height - 1, 0, " " * (width - 1))
             # Draw hints on left
             stdscr.addstr(height - 1, 1, hint_text, curses.A_DIM)
+            # Draw verification status in middle (if present)
+            if verify_text:
+                verify_x = 1 + len(hint_text) + 1
+                stdscr.addstr(height - 1, verify_x, verify_text, curses.A_DIM)
             # Draw help on right
             stdscr.addstr(height - 1, width - len(help_text) - 1, help_text, curses.A_DIM)
             stdscr.refresh()  # Explicitly refresh to ensure hint bar is visible
         except curses.error:
             pass  # Ignore errors at edge of screen
+
+    def show_verification_error(self, stdscr, error_message):
+        """Display a fatal verification error and wait for user to acknowledge."""
+        while True:
+            height, width = stdscr.getmaxyx()
+            stdscr.clear()
+
+            # Draw error box
+            box_width = min(70, width - 4)
+            lines = []
+            for line in error_message.split('\n'):
+                # Word wrap long lines
+                while len(line) > box_width - 4:
+                    lines.append(line[:box_width - 4])
+                    line = line[box_width - 4:]
+                lines.append(line)
+
+            box_height = len(lines) + 6  # Title, blank, lines, blank, instruction, border
+            box_y = (height - box_height) // 2
+            box_x = (width - box_width) // 2
+
+            # Create dialog window
+            try:
+                dialog_win = curses.newwin(box_height, box_width, box_y, box_x)
+                dialog_win.clear()
+                dialog_win.border()
+
+                # Title
+                title = " CACHE VERIFICATION FAILED "
+                dialog_win.addstr(0, (box_width - len(title)) // 2, title, curses.A_BOLD | curses.A_REVERSE)
+
+                # Error message
+                for i, line in enumerate(lines):
+                    try:
+                        dialog_win.addstr(2 + i, 2, line[:box_width - 4])
+                    except curses.error:
+                        pass
+
+                # Instruction
+                instruction = "Press any key to exit"
+                dialog_win.addstr(box_height - 2, (box_width - len(instruction)) // 2, instruction, curses.A_DIM)
+
+                dialog_win.refresh()
+            except curses.error:
+                pass
+
+            # Wait for key
+            key = stdscr.getch()
+            if key == curses.KEY_RESIZE:
+                stdscr.clear()
+                stdscr.refresh()
+                continue
+            else:
+                break
 
     def draw_confirmation_dialog(self, stdscr, message, prompt="Confirm? (y/n)"):
         """Draw a confirmation dialog in the center of the screen."""
@@ -2008,6 +2142,13 @@ Actions:
 
         # Main loop
         while True:
+            # Check for background verification errors
+            verification_error = self.check_verification_status()
+            if verification_error:
+                # Show fatal error and exit
+                self.show_verification_error(stdscr, verification_error)
+                return  # Exit the TUI
+
             height, width = stdscr.getmaxyx()
             usable_height = height - 1  # Reserve last line for hint bar
 

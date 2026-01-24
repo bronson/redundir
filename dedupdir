@@ -13,11 +13,15 @@ The redundancy score for each directory is:
 
 import argparse
 import hashlib
+import json
 import os
 import sys
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+
+CACHE_FILE_NAME = '~dedupdir-cache.json'
+CACHE_VERSION = 1
 
 
 def hash_file(filepath: Path, algorithm: str = 'blake2b', chunk_size: int = 8388608) -> str | None:
@@ -48,7 +52,274 @@ def _hash_file_worker(args):
     return filepath, hash_file(filepath, algorithm)
 
 
-def find_duplicates(root_paths, algorithm: str = 'blake2b', jobs: int = 4, quiet: bool = False):
+def _verify_hash_worker(args):
+    """Worker function for verifying a cached hash is still correct."""
+    filepath, expected_hash, algorithm = args
+    actual_hash = hash_file(filepath, algorithm)
+    if actual_hash is None:
+        return filepath, 'unreadable', expected_hash, None
+    if actual_hash != expected_hash:
+        return filepath, 'mismatch', expected_hash, actual_hash
+    return filepath, 'ok', expected_hash, actual_hash
+
+
+def get_cache_file(root_path):
+    """Get the cache file path for a given root."""
+    return Path(root_path) / CACHE_FILE_NAME
+
+
+def load_cache(root_path, algorithm):
+    """
+    Load cache for a root directory.
+
+    Returns:
+        dict mapping relative file paths to {'hash': str, 'mtime_ns': int, 'size': int}
+        or None if cache doesn't exist or is invalid
+    """
+    cache_file = get_cache_file(root_path)
+    if not cache_file.exists():
+        return None
+
+    try:
+        with open(cache_file, 'r') as f:
+            data = json.load(f)
+
+        # Validate cache version and algorithm
+        if data.get('version') != CACHE_VERSION:
+            return None
+        if data.get('algorithm') != algorithm:
+            return None
+
+        return data.get('files', {})
+    except (json.JSONDecodeError, IOError, OSError):
+        return None
+
+
+def save_cache(root_path, algorithm, file_cache):
+    """
+    Save cache for a root directory.
+
+    Args:
+        root_path: Root directory path
+        algorithm: Hash algorithm used
+        file_cache: dict mapping relative file paths to {'hash': str, 'mtime_ns': int, 'size': int}
+    """
+    cache_file = get_cache_file(root_path)
+
+    temp_file = cache_file.with_suffix('.tmp')
+    try:
+        data = {
+            'version': CACHE_VERSION,
+            'algorithm': algorithm,
+            'files': file_cache
+        }
+
+        # Write atomically using temp file
+        with open(temp_file, 'w') as f:
+            json.dump(data, f)
+        temp_file.replace(cache_file)
+    except (IOError, OSError, PermissionError):
+        # Read-only filesystem or permission denied - silently skip caching
+        # Clean up temp file if it was created
+        try:
+            if temp_file.exists():
+                temp_file.unlink()
+        except (IOError, OSError, PermissionError):
+            pass
+
+
+def validate_cache_mtimes(root_path, cache, quiet=False):
+    """
+    Quickly validate that cached mtimes match current file mtimes.
+
+    Returns:
+        Tuple of (valid_entries, invalid_entries, missing_entries, new_files)
+        - valid_entries: dict of cache entries where mtime_ns matches
+        - invalid_entries: list of relative paths where mtime_ns changed
+        - missing_entries: list of relative paths that no longer exist
+        - new_files: list of (absolute_path, size) for files not in cache
+    """
+    valid_entries = {}
+    invalid_entries = []
+    missing_entries = []
+    new_files = []
+
+    root_path = Path(root_path)
+
+    # Check existing cache entries
+    for rel_path, entry in cache.items():
+        abs_path = root_path / rel_path
+        try:
+            if abs_path.is_symlink():
+                # Skip symlinks - treat as missing
+                missing_entries.append(rel_path)
+                continue
+            stat = abs_path.stat()
+            # Compare mtime_ns and size (exact integer comparison)
+            if stat.st_mtime_ns == entry['mtime_ns'] and stat.st_size == entry['size']:
+                valid_entries[rel_path] = entry
+            else:
+                invalid_entries.append(rel_path)
+        except (IOError, OSError):
+            missing_entries.append(rel_path)
+
+    # Find new files not in cache
+    cached_rel_paths = set(cache.keys())
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dir_path = Path(dirpath)
+
+        # Skip trash directories
+        dirnames[:] = [d for d in dirnames if d != '~dedupdir-trash']
+
+        for filename in filenames:
+            # Skip the cache file
+            if filename == CACHE_FILE_NAME:
+                continue
+
+            file_path = dir_path / filename
+
+            if file_path.is_symlink():
+                continue
+
+            try:
+                rel_path = str(file_path.relative_to(root_path))
+                if rel_path not in cached_rel_paths:
+                    stat = file_path.stat()
+                    new_files.append((file_path, stat.st_size))
+            except (IOError, OSError, ValueError):
+                continue
+
+    return valid_entries, invalid_entries, missing_entries, new_files
+
+
+def collect_files_with_cache(root_paths, algorithm, quiet=False):
+    """
+    Collect files and use cache where possible.
+
+    Returns:
+        Tuple of (size_groups, dir_all_files, cached_hashes, files_to_hash, cache_data_per_root)
+        - size_groups: dict mapping size to list of file paths
+        - dir_all_files: dict mapping dir path to list of file paths
+        - cached_hashes: dict mapping file path to cached hash
+        - files_to_hash: list of file paths that need hashing
+        - cache_data_per_root: dict mapping root to cache dict for later saving
+    """
+    if isinstance(root_paths, Path):
+        root_paths = [root_paths]
+
+    size_groups = defaultdict(list)
+    dir_all_files = defaultdict(list)
+    cached_hashes = {}  # file_path -> hash
+    files_needing_hash = []  # (file_path, size)
+    cache_data_per_root = {}  # root -> {rel_path -> {hash, mtime, size}}
+
+    total_cached = 0
+    total_new = 0
+
+    for root_path in root_paths:
+        root_path = Path(root_path)
+        cache = load_cache(root_path, algorithm)
+
+        if cache:
+            if not quiet:
+                print(f"  Loading cache for {root_path.name}...", file=sys.stderr)
+
+            valid, invalid, missing, new_files = validate_cache_mtimes(root_path, cache, quiet)
+
+            if not quiet:
+                print(f"    {len(valid)} cached, {len(invalid)} changed, {len(missing)} removed, {len(new_files)} new", file=sys.stderr)
+
+            # Use valid cache entries
+            for rel_path, entry in valid.items():
+                abs_path = root_path / rel_path
+                dir_path = abs_path.parent
+                size = entry['size']
+
+                size_groups[size].append(abs_path)
+                dir_all_files[dir_path].append(abs_path)
+                cached_hashes[abs_path] = entry['hash']
+                total_cached += 1
+
+            # Queue changed files for rehashing
+            for rel_path in invalid:
+                abs_path = root_path / rel_path
+                try:
+                    stat = abs_path.stat()
+                    dir_path = abs_path.parent
+                    size_groups[stat.st_size].append(abs_path)
+                    dir_all_files[dir_path].append(abs_path)
+                    files_needing_hash.append((abs_path, stat.st_size, stat.st_mtime_ns))
+                    total_new += 1
+                except (IOError, OSError):
+                    pass
+
+            # Queue new files for hashing
+            for abs_path, size in new_files:
+                dir_path = abs_path.parent
+                size_groups[size].append(abs_path)
+                dir_all_files[dir_path].append(abs_path)
+                try:
+                    mtime_ns = abs_path.stat().st_mtime_ns
+                    files_needing_hash.append((abs_path, size, mtime_ns))
+                    total_new += 1
+                except (IOError, OSError):
+                    pass
+
+            # Start with valid entries for this root's cache
+            cache_data_per_root[root_path] = {rel_path: entry for rel_path, entry in valid.items()}
+        else:
+            # No cache - collect all files
+            if not quiet:
+                print(f"  Collecting files from {root_path.name} (no cache)...", file=sys.stderr)
+
+            cache_data_per_root[root_path] = {}
+
+            for dirpath, dirnames, filenames in os.walk(root_path):
+                dir_path = Path(dirpath)
+
+                # Skip trash directories
+                dirnames[:] = [d for d in dirnames if d != '~dedupdir-trash']
+
+                for filename in filenames:
+                    # Skip the cache file
+                    if filename == CACHE_FILE_NAME:
+                        continue
+
+                    file_path = dir_path / filename
+
+                    if file_path.is_symlink():
+                        continue
+
+                    if file_path.is_file():
+                        try:
+                            stat = file_path.stat()
+                            size_groups[stat.st_size].append(file_path)
+                            dir_all_files[dir_path].append(file_path)
+                            files_needing_hash.append((file_path, stat.st_size, stat.st_mtime_ns))
+                            total_new += 1
+                        except (IOError, OSError):
+                            continue
+
+    if not quiet and total_cached > 0:
+        print(f"  {total_cached} files from cache, {total_new} files to process", file=sys.stderr)
+
+    return size_groups, dir_all_files, cached_hashes, files_needing_hash, cache_data_per_root
+
+
+def get_files_to_verify(root_paths, cached_hashes, algorithm):
+    """
+    Get list of cached files that should be verified in the background.
+
+    Returns:
+        List of (filepath, expected_hash, algorithm) tuples
+    """
+    files_to_verify = []
+    for filepath, expected_hash in cached_hashes.items():
+        files_to_verify.append((filepath, expected_hash, algorithm))
+    return files_to_verify
+
+
+def find_duplicates(root_paths, algorithm: str = 'blake2b', jobs: int = 4, quiet: bool = False, use_cache: bool = True):
     """
     Walk directory trees and find directories with duplicate files.
 
@@ -60,63 +331,85 @@ def find_duplicates(root_paths, algorithm: str = 'blake2b', jobs: int = 4, quiet
         algorithm: Hash algorithm to use
         jobs: Number of parallel jobs for hashing
         quiet: If True, suppress progress information
+        use_cache: If True, use cached hashes where available
 
     Returns:
-        Tuple of (dir_stats, total_duplicates, total_files, file_to_hash, hash_to_dirs, dir_all_files)
+        Tuple of (dir_stats, total_duplicates, total_files, file_to_hash, hash_to_dirs, dir_all_files, cached_hashes)
+        The cached_hashes dict maps file paths to their hashes for files that were loaded from cache.
     """
     # Normalize to list
     if isinstance(root_paths, Path):
         root_paths = [root_paths]
 
-    # First pass: collect all files and group by size
-    size_groups: dict[int, list[Path]] = defaultdict(list)
-    dir_all_files: dict[Path, list[Path]] = defaultdict(list)  # dir -> list of file paths
+    # Collect files, using cache if available
+    if use_cache:
+        size_groups, dir_all_files, cached_hashes, files_needing_hash, cache_data_per_root = \
+            collect_files_with_cache(root_paths, algorithm, quiet)
+        file_count = sum(len(files) for files in dir_all_files.values())
+    else:
+        # Original behavior - no cache
+        size_groups = defaultdict(list)
+        dir_all_files = defaultdict(list)
+        cached_hashes = {}
+        files_needing_hash = []
+        cache_data_per_root = {Path(rp): {} for rp in root_paths}
+        file_count = 0
 
-    file_count = 0
+        if not quiet:
+            print(f"  Collecting files...", file=sys.stderr)
 
-    if not quiet:
-        print(f"  Collecting files...", file=sys.stderr)
+        for root_path in root_paths:
+            for dirpath, dirnames, filenames in os.walk(root_path):
+                dir_path = Path(dirpath)
 
-    for root_path in root_paths:
-        for dirpath, dirnames, filenames in os.walk(root_path):
-            dir_path = Path(dirpath)
+                # Skip trash directories
+                dirnames[:] = [d for d in dirnames if d != '~dedupdir-trash']
 
-            # Skip trash directories
-            dirnames[:] = [d for d in dirnames if d != '~dedupdir-trash']
-
-            for filename in filenames:
-                file_path = dir_path / filename
-
-                # Skip symlinks to avoid counting the same file multiple times
-                if file_path.is_symlink():
-                    continue
-
-                if file_path.is_file():
-                    try:
-                        file_size = file_path.stat().st_size
-                        size_groups[file_size].append(file_path)
-                        dir_all_files[dir_path].append(file_path)
-                        file_count += 1
-                    except (IOError, OSError):
+                for filename in filenames:
+                    # Skip the cache file
+                    if filename == CACHE_FILE_NAME:
                         continue
 
-    if not quiet:
-        print(f"  Found {file_count} total files", file=sys.stderr)
+                    file_path = dir_path / filename
 
-    # Only hash files that have at least one other file with the same size
+                    if file_path.is_symlink():
+                        continue
+
+                    if file_path.is_file():
+                        try:
+                            stat = file_path.stat()
+                            size_groups[stat.st_size].append(file_path)
+                            dir_all_files[dir_path].append(file_path)
+                            files_needing_hash.append((file_path, stat.st_size, stat.st_mtime_ns))
+                            file_count += 1
+                        except (IOError, OSError):
+                            continue
+
+        if not quiet:
+            print(f"  Found {file_count} total files", file=sys.stderr)
+
+    # Determine which files need hashing (same-size optimization)
+    # For files from cache, we already have their hashes
+    # For new files, only hash if there's another file with same size
     files_to_hash = []
-    for size, paths in size_groups.items():
-        if len(paths) > 1:
-            files_to_hash.extend(paths)
+    for fpath, size, mtime in files_needing_hash:
+        # Check if there's another file with this size (could be cached or new)
+        if len(size_groups[size]) > 1:
+            files_to_hash.append((fpath, size, mtime))
 
-    if not quiet:
-        print(f"  Hashing {len(files_to_hash)} files, skipping {file_count - len(files_to_hash)} files with unique sizes", file=sys.stderr)
+    if not quiet and files_to_hash:
+        print(f"  Hashing {len(files_to_hash)} files...", file=sys.stderr)
 
     # Hash files in parallel
     file_hashes: dict[str, list[Path]] = defaultdict(list)
 
+    # First, add all cached hashes
+    for fpath, fhash in cached_hashes.items():
+        file_hashes[fhash].append(fpath)
+
+    # Then hash new files
     if files_to_hash:
-        hash_args = [(fpath, algorithm) for fpath in files_to_hash]
+        hash_args = [(fpath, algorithm) for fpath, size, mtime in files_to_hash]
 
         if jobs > 1:
             with ProcessPoolExecutor(max_workers=jobs) as executor:
@@ -124,25 +417,59 @@ def find_duplicates(root_paths, algorithm: str = 'blake2b', jobs: int = 4, quiet
                     if file_hash:
                         file_hashes[file_hash].append(filepath)
 
+                        # Update cache for this file
+                        for root_path in cache_data_per_root:
+                            try:
+                                rel_path = str(filepath.relative_to(root_path))
+                                # Find the matching entry in files_to_hash to get mtime_ns
+                                for fpath, size, mtime_ns in files_to_hash:
+                                    if fpath == filepath:
+                                        cache_data_per_root[root_path][rel_path] = {
+                                            'hash': file_hash,
+                                            'mtime_ns': mtime_ns,
+                                            'size': size
+                                        }
+                                        break
+                                break
+                            except ValueError:
+                                continue
+
                     if not quiet and i % 1000 == 0:
                         print(f"  Hashed {i}/{len(files_to_hash)} files...", file=sys.stderr)
         else:
             # Single-threaded mode
-            for i, (filepath, algorithm_arg) in enumerate(hash_args, 1):
-                file_hash = hash_file(filepath, algorithm_arg)
+            for i, (fpath, size, mtime_ns) in enumerate(files_to_hash, 1):
+                file_hash = hash_file(fpath, algorithm)
                 if file_hash:
-                    file_hashes[file_hash].append(filepath)
+                    file_hashes[file_hash].append(fpath)
+
+                    # Update cache for this file
+                    for root_path in cache_data_per_root:
+                        try:
+                            rel_path = str(fpath.relative_to(root_path))
+                            cache_data_per_root[root_path][rel_path] = {
+                                'hash': file_hash,
+                                'mtime_ns': mtime_ns,
+                                'size': size
+                            }
+                            break
+                        except ValueError:
+                            continue
 
                 if not quiet and i % 1000 == 0:
                     print(f"  Hashed {i}/{len(files_to_hash)} files...", file=sys.stderr)
 
-    if not quiet:
+    if not quiet and files_to_hash:
         print(f"  Hashed {len(files_to_hash)} files", file=sys.stderr)
+
+    # Save updated caches
+    if use_cache:
+        for root_path, cache_data in cache_data_per_root.items():
+            if cache_data:  # Only save if there's data
+                save_cache(root_path, algorithm, cache_data)
 
     # Find hashes that appear more than once (duplicates)
     duplicate_hashes = {h for h, paths in file_hashes.items() if len(paths) > 1}
-
-
 
     # Build a map of file path to hash for duplicate files
     file_to_hash = {}
@@ -171,7 +498,7 @@ def find_duplicates(root_paths, algorithm: str = 'blake2b', jobs: int = 4, quiet
             for path in paths:
                 hash_to_dirs[hash_val].add(path.parent)
 
-    return dir_stats, total_duplicates, total_files, file_to_hash, hash_to_dirs, dir_all_files
+    return dir_stats, total_duplicates, total_files, file_to_hash, hash_to_dirs, dir_all_files, cached_hashes
 
 
 def calculate_redundancy_score(duplicates: int, total: int) -> float:
@@ -239,7 +566,7 @@ def main():
                 print(f"  {root}", file=sys.stderr)
 
     # Scan all directories together (find_duplicates handles multiple roots)
-    dir_stats, total_duplicates, total_files, file_to_hash, hash_to_dirs, dir_all_files = find_duplicates(roots, algorithm=args.algorithm, jobs=args.jobs, quiet=args.quiet)
+    dir_stats, total_duplicates, total_files, file_to_hash, hash_to_dirs, dir_all_files, _ = find_duplicates(roots, algorithm=args.algorithm, jobs=args.jobs, quiet=args.quiet)
 
     # Print summary before results
     if not args.quiet:
