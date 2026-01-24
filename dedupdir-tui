@@ -1916,6 +1916,18 @@ Actions:
                 dir_path = dirs_with_file[self.selected_idx]
                 self.push_view({'type': 'dir_detail', 'data': {'dir_path': dir_path}})
 
+    def clamp_selection_after_trash(self):
+        """Ensure selected_idx is still valid after an item was trashed.
+
+        The selection should stay at the same index (so the next item becomes selected),
+        unless we deleted the last item, in which case we need to move up.
+        """
+        list_size = self.get_current_list_size()
+        if list_size == 0:
+            self.selected_idx = 0
+        elif self.selected_idx >= list_size:
+            self.selected_idx = list_size - 1
+
     def handle_trash_key(self, view):
         """Handle 't' key - trash selected item."""
         item_to_trash = None
@@ -1970,6 +1982,7 @@ Actions:
             else:
                 # Trash immediately
                 self.trash_item(item_to_trash, trash_type)
+                self.clamp_selection_after_trash()
 
     def handle_view_key(self, view, stdscr, height, width):
         """Handle 'v' key - view file content."""
@@ -2232,6 +2245,7 @@ Actions:
                 if key in (ord('y'), ord('Y')):
                     item_path, item_type = self.confirm_trash_item, self.confirm_trash_type
                     self.trash_item(item_path, item_type)
+                    self.clamp_selection_after_trash()
                     self.confirm_trash_item = None
                     self.confirm_trash_type = None
                     continue
