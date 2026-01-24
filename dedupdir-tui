@@ -1513,6 +1513,58 @@ Actions:
         if file_path and file_path.is_file():
             self.open_file_with_system_app(file_path)
 
+    def draw_all_panes(self, usable_height, width):
+        """Draw all panes in the view stack with proper indentation and frozen selections."""
+        # First, draw the main view (always at bottom) with its saved selection
+        main_win = curses.newwin(usable_height, width, 0, 0)
+        main_view = self.view_stack[0]
+        if len(self.view_stack) == 1:
+            # Main view is current - use live selection
+            main_selected = self.selected_idx
+            main_scroll = self.scroll_offset
+        else:
+            # Main view is background - use frozen selection
+            main_selected = main_view.get('selected_idx', 0)
+            main_scroll = main_view.get('scroll_offset', 0)
+        self.draw_main_view(main_win, usable_height, width, main_selected, main_scroll)
+
+        # Then draw each overlay in the stack (skip index 0 which is always 'main')
+        for level_idx in range(1, len(self.view_stack)):
+            level_view = self.view_stack[level_idx]
+
+            # Each level is indented 4 columns and 1 row from the previous
+            indent_x = level_idx * 4
+            indent_y = level_idx * 1
+
+            # Calculate overlay size (descend 1 row but extend to bottom)
+            overlay_height = usable_height - indent_y
+            overlay_width = width - indent_x
+
+            # Make sure we have room
+            if overlay_height < 10 or overlay_width < 40:
+                break
+
+            # Determine if this is the current view or a background view
+            is_current_view = (level_idx == len(self.view_stack) - 1)
+
+            # For background views, use their saved selection; for current view, use live selection
+            if is_current_view:
+                # Current view - use live selection (responds to arrow keys)
+                draw_selected_idx = self.selected_idx
+                draw_scroll_offset = self.scroll_offset
+            else:
+                # Background view - use frozen saved selection
+                draw_selected_idx = level_view.get('selected_idx', 0)
+                draw_scroll_offset = level_view.get('scroll_offset', 0)
+
+            # Draw the overlay with the appropriate selection
+            overlay_win = curses.newwin(overlay_height, overlay_width, indent_y, indent_x)
+            if level_view['type'] == 'dir_detail':
+                self.draw_dir_detail_view(overlay_win, overlay_height, overlay_width, level_view, draw_selected_idx, draw_scroll_offset)
+            elif level_view['type'] == 'file_detail':
+                self.draw_file_detail_view(overlay_win, overlay_height, overlay_width, level_view, draw_selected_idx, draw_scroll_offset)
+
+
     def run(self, stdscr):
         """Main TUI loop."""
         curses.curs_set(0)  # Hide cursor
@@ -1563,72 +1615,18 @@ Actions:
                 self.draw_hint_bar(stdscr, 'trash')
 
             elif self.confirm_trash_item is not None:
-                # Draw confirmation dialog
-                view = self.get_current_view()
-                main_win = curses.newwin(usable_height, width, 0, 0)
+                # Draw confirmation dialog - draw all panes then overlay the dialog
+                self.draw_all_panes(usable_height, width)
 
-                if view['type'] == 'main':
-                    self.draw_main_view(main_win, usable_height, width, self.selected_idx, self.scroll_offset)
-                elif view['type'] == 'dir_detail':
-                    self.draw_dir_detail_view(main_win, usable_height, width, view, self.selected_idx, self.scroll_offset)
-                elif view['type'] == 'file_detail':
-                    self.draw_file_detail_view(main_win, usable_height, width, view, self.selected_idx, self.scroll_offset)
-
+                # Draw confirmation dialog on top of all panes
                 rel_path = self.get_path_with_root(self.confirm_trash_item)
                 message = f"There is only one copy of\n\n{rel_path}\n\nIf you trash it, you will lose data."
                 self.draw_confirmation_dialog(stdscr, message)
                 self.draw_hint_bar(stdscr, 'confirm')
 
             else:
-                # Normal view - draw all views in stack with 3-col, 1-row indent per level
-                # First, draw the main view (always at bottom) with its saved selection
-                main_win = curses.newwin(usable_height, width, 0, 0)
-                main_view = self.view_stack[0]
-                if len(self.view_stack) == 1:
-                    # Main view is current - use live selection
-                    main_selected = self.selected_idx
-                    main_scroll = self.scroll_offset
-                else:
-                    # Main view is background - use frozen selection
-                    main_selected = main_view.get('selected_idx', 0)
-                    main_scroll = main_view.get('scroll_offset', 0)
-                self.draw_main_view(main_win, usable_height, width, main_selected, main_scroll)
-
-                # Then draw each overlay in the stack (skip index 0 which is always 'main')
-                for level_idx in range(1, len(self.view_stack)):
-                    level_view = self.view_stack[level_idx]
-
-                    # Each level is indented 4 columns and 1 row from the previous
-                    indent_x = level_idx * 4
-                    indent_y = level_idx * 1
-
-                    # Calculate overlay size (descend 1 row but extend to bottom)
-                    overlay_height = usable_height - indent_y
-                    overlay_width = width - indent_x
-
-                    # Make sure we have room
-                    if overlay_height < 10 or overlay_width < 40:
-                        break
-
-                    # Determine if this is the current view or a background view
-                    is_current_view = (level_idx == len(self.view_stack) - 1)
-
-                    # For background views, use their saved selection; for current view, use live selection
-                    if is_current_view:
-                        # Current view - use live selection (responds to arrow keys)
-                        draw_selected_idx = self.selected_idx
-                        draw_scroll_offset = self.scroll_offset
-                    else:
-                        # Background view - use frozen saved selection
-                        draw_selected_idx = level_view.get('selected_idx', 0)
-                        draw_scroll_offset = level_view.get('scroll_offset', 0)
-
-                    # Draw the overlay with the appropriate selection
-                    overlay_win = curses.newwin(overlay_height, overlay_width, indent_y, indent_x)
-                    if level_view['type'] == 'dir_detail':
-                        self.draw_dir_detail_view(overlay_win, overlay_height, overlay_width, level_view, draw_selected_idx, draw_scroll_offset)
-                    elif level_view['type'] == 'file_detail':
-                        self.draw_file_detail_view(overlay_win, overlay_height, overlay_width, level_view, draw_selected_idx, draw_scroll_offset)
+                # Normal view - draw all panes in the stack
+                self.draw_all_panes(usable_height, width)
 
                 view = self.get_current_view()
                 self.draw_hint_bar(stdscr, view['type'])
