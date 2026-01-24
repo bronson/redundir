@@ -2353,14 +2353,24 @@ Actions:
             elif key in (curses.KEY_UP, ord('k')):
                 if self.selected_idx > 0:
                     self.selected_idx -= 1
+                    # If selection went off screen (above), scroll to show it
                     if self.selected_idx < self.scroll_offset:
                         self.scroll_offset = self.selected_idx
+                    # If selection is on first line and there's a top indicator, scroll early
+                    elif self.selected_idx == self.scroll_offset and self.scroll_offset > 0:
+                        self.scroll_offset -= 1
             elif key in (curses.KEY_DOWN, ord('j')):
                 if self.selected_idx < list_size - 1:
                     self.selected_idx += 1
                     visible_lines = self.get_current_visible_lines(usable_height)
-                    if self.selected_idx >= self.scroll_offset + visible_lines:
+                    last_visible_idx = self.scroll_offset + visible_lines - 1
+                    more_below = self.scroll_offset + visible_lines < list_size
+                    # If selection went off screen, scroll to show it
+                    if self.selected_idx > last_visible_idx:
                         self.scroll_offset = self.selected_idx - visible_lines + 1
+                    # If selection is on last line and there's a bottom indicator, scroll early
+                    elif self.selected_idx == last_visible_idx and more_below:
+                        self.scroll_offset += 1
             elif key in (curses.KEY_PPAGE, 2):  # Page Up / Ctrl-B
                 visible_lines = self.get_current_visible_lines(usable_height)
                 self.selected_idx = max(0, self.selected_idx - visible_lines)
