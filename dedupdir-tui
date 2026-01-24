@@ -96,6 +96,10 @@ class DedupdirTUI:
         self.confirm_quit = False  # Whether quit confirmation is pending
         self.show_no_duplicates_message = False  # Show message when no duplicates found
 
+        # Collapsed directory groups - set of parent dir paths that are collapsed
+        self.expanded_groups = set()  # Groups that have been explicitly expanded
+        self._display_list_cache = None  # Cached display list for performance
+
         # Data will be populated by scan()
         self.sorted_dirs = []
         self.dir_stats = {}
@@ -118,6 +122,7 @@ class DedupdirTUI:
 
         # Recalculate sorted_dirs with all directories
         self.recalculate_sorted_dirs()
+        self.invalidate_display_cache()
 
     def recalculate_sorted_dirs(self):
         """Recalculate sorted_dirs including ALL directories, even those with 0% redundancy."""
@@ -136,6 +141,121 @@ class DedupdirTUI:
             all_dirs_with_stats,
             key=lambda x: (-calculate_redundancy_score(x[1][0], x[1][1]), str(x[0]))
         )
+
+    def invalidate_display_cache(self):
+        """Invalidate the display list cache, forcing a rebuild on next access."""
+        self._display_list_cache = None
+
+    def build_display_list(self):
+        """Build display list with collapsible groups for 100% redundant subdirectories.
+
+        Returns list of display items, each is either:
+        - ('dir', dir_path, stats, is_child) - a regular directory entry (is_child=True if under a collapse)
+        - ('collapse', parent_path, child_dirs, total_files, total_dups) - a collapse line
+        """
+        # Return cached version if available
+        if self._display_list_cache is not None:
+            return self._display_list_cache
+
+        if not self.sorted_dirs:
+            return []
+
+        # First pass: identify which directories are 100% redundant
+        fully_redundant = set()
+        for dir_path, (dups, total) in self.sorted_dirs:
+            if total > 0 and dups == total:
+                fully_redundant.add(dir_path)
+
+        # Second pass: find parent-child relationships among sorted_dirs
+        # A child is a subdirectory of a parent if parent is a prefix of child
+        dir_paths = [d[0] for d in self.sorted_dirs]
+
+        # Map from parent -> list of direct children that are also in sorted_dirs
+        children_map = {}  # parent_path -> [(child_path, stats), ...]
+        has_parent = set()  # dirs that have a parent in the list
+
+        for i, (dir_path, stats) in enumerate(self.sorted_dirs):
+            # Find the closest parent in the list
+            for j, (potential_parent, _) in enumerate(self.sorted_dirs):
+                if i != j and self.is_subdir(dir_path, potential_parent):
+                    # Check if there's a closer parent
+                    is_closest = True
+                    for k, (other_parent, _) in enumerate(self.sorted_dirs):
+                        if k != i and k != j and self.is_subdir(dir_path, other_parent) and self.is_subdir(other_parent, potential_parent):
+                            is_closest = False
+                            break
+                    if is_closest:
+                        if potential_parent not in children_map:
+                            children_map[potential_parent] = []
+                        children_map[potential_parent].append((dir_path, stats))
+                        has_parent.add(dir_path)
+                        break
+
+        # Third pass: build display list
+        display_list = []
+        skip_dirs = set()  # Dirs to skip because they're in a collapse
+        child_of_collapse = set()  # Dirs that are children of an expanded collapse
+
+        for dir_path, stats in self.sorted_dirs:
+            if dir_path in skip_dirs:
+                continue
+
+            # Check if this is a child of an expanded collapse
+            is_child = dir_path in child_of_collapse
+
+            # Add the directory itself
+            display_list.append(('dir', dir_path, stats, is_child))
+
+            # Check if this directory has collapsible children
+            if dir_path in children_map and dir_path in fully_redundant:
+                children = children_map[dir_path]
+                # Check if ALL children are 100% redundant
+                all_children_redundant = all(
+                    child_path in fully_redundant
+                    for child_path, _ in children
+                )
+
+                if all_children_redundant and children:
+                    # Calculate totals for the collapse
+                    total_files = sum(s[1] for _, s in children)
+                    total_dups = sum(s[0] for _, s in children)
+
+                    # Calculate total size of files in collapsed directories
+                    total_size = 0
+                    for child_path, _ in children:
+                        for fpath in self.dir_all_files.get(child_path, []):
+                            try:
+                                total_size += fpath.stat().st_size
+                            except:
+                                pass
+
+                    # Add collapse line
+                    child_paths = [cp for cp, _ in children]
+                    display_list.append(('collapse', dir_path, child_paths, total_files, total_dups, total_size))
+
+                    # If not expanded, skip the children
+                    if dir_path not in self.expanded_groups:
+                        for child_path, _ in children:
+                            skip_dirs.add(child_path)
+                            # Also skip grandchildren
+                            if child_path in children_map:
+                                for grandchild_path, _ in children_map[child_path]:
+                                    skip_dirs.add(grandchild_path)
+                    else:
+                        # Mark children as belonging to this collapse (for indentation)
+                        for child_path, _ in children:
+                            child_of_collapse.add(child_path)
+
+        self._display_list_cache = display_list
+        return display_list
+
+    def is_subdir(self, child, parent):
+        """Check if child is a subdirectory of parent."""
+        try:
+            child.relative_to(parent)
+            return child != parent
+        except ValueError:
+            return False
 
     def get_path_with_root(self, path):
         """Get path including root prefix (e.g., 'pix/subdir/file.jpg')."""
@@ -333,7 +453,7 @@ class DedupdirTUI:
         """Get the size of the current list being displayed."""
         view = self.get_current_view()
         if view['type'] == 'main':
-            return len(self.sorted_dirs)
+            return len(self.build_display_list())
         elif view['type'] == 'dir_detail':
             dir_path = view['data']['dir_path']
             files = self.get_all_files_with_counts(dir_path)
@@ -442,6 +562,7 @@ class DedupdirTUI:
 
         # Recalculate sorted_dirs with all directories
         self.recalculate_sorted_dirs()
+        self.invalidate_display_cache()
 
         return True
 
@@ -532,6 +653,7 @@ class DedupdirTUI:
 
         # Rescan to update data structures
         self.scan(quiet=True)
+        self.invalidate_display_cache()
 
         return True
 
@@ -632,6 +754,9 @@ class DedupdirTUI:
             except curses.error:
                 pass
 
+        # Build display list with collapsible groups
+        display_list = self.build_display_list()
+
         title = f" All Directories ({len(self.sorted_dirs)}) "
         try:
             win.addstr(0, 2, title[:width-4], curses.A_BOLD)
@@ -646,7 +771,7 @@ class DedupdirTUI:
             except curses.error:
                 pass
 
-        if not self.sorted_dirs:
+        if not display_list:
             win.addstr(2, 1, "No directories to display")
             win.refresh()
             return
@@ -662,24 +787,57 @@ class DedupdirTUI:
         except curses.error:
             pass
 
-        # Display directories
+        # Display items
         display_height = height - 3  # Account for border, header, and bottom border
         for i in range(display_height):
             idx = scroll_offset + i
-            if idx >= len(self.sorted_dirs):
+            if idx >= len(display_list):
                 break
 
-            dir_path, (duplicates, total) = self.sorted_dirs[idx]
-            score = calculate_redundancy_score(duplicates, total)
-            path_str = self.get_path_with_root(dir_path)
-            mtime_str = self.format_mtime(dir_path)
+            item = display_list[idx]
 
-            # Format columns
-            percent_col = f"{score:6.1%}" if score > 0 else "   0% "
-            dup_col = f"{duplicates:4d}"
-            total_col = f"{total:5d}"
+            if item[0] == 'dir':
+                # Regular directory entry
+                _, dir_path, (duplicates, total), is_child = item
+                score = calculate_redundancy_score(duplicates, total)
+                path_str = self.get_path_with_root(dir_path)
+                mtime_str = self.format_mtime(dir_path)
 
-            line = f"{percent_col} {dup_col}  {total_col}  {mtime_str}  {path_str}"
+                # Format columns
+                percent_col = f"{score:6.1%}" if score > 0 else "   0% "
+                dup_col = f"{duplicates:4d}"
+                total_col = f"{total:5d}"
+
+                # Indent child directories by 2 spaces
+                if is_child:
+                    line = f"  {percent_col} {dup_col}  {total_col}  {mtime_str}  {path_str}"
+                else:
+                    line = f"{percent_col} {dup_col}  {total_col}  {mtime_str}  {path_str}"
+
+            elif item[0] == 'collapse':
+                # Collapse line
+                _, parent_path, child_dirs, total_files, total_dups, total_size = item
+                num_dirs = len(child_dirs)
+                is_expanded = parent_path in self.expanded_groups
+
+                # Proper pluralization
+                dir_word = "subdir" if num_dirs == 1 else "subdirs"
+                file_word = "file" if total_files == 1 else "files"
+
+                # Format size
+                if total_size < 1024:
+                    size_str = f"{total_size}B"
+                elif total_size < 1024 * 1024:
+                    size_str = f"{total_size/1024:.1f}K"
+                elif total_size < 1024 * 1024 * 1024:
+                    size_str = f"{total_size/(1024*1024):.1f}M"
+                else:
+                    size_str = f"{total_size/(1024*1024*1024):.1f}G"
+
+                if is_expanded:
+                    line = f"       ▼  {num_dirs} {dir_word}, {total_files} {file_word}, {size_str}"
+                else:
+                    line = f"       ▶  {num_dirs} {dir_word}, {total_files} {file_word}, {size_str}"
 
             # Truncate if too long
             max_len = width - 3
@@ -1364,10 +1522,24 @@ Actions:
     def handle_enter_key(self, view):
         """Handle Enter key - drill down into directories or files."""
         if view['type'] == 'main':
-            # Drilling into a directory from main view
-            if self.selected_idx < len(self.sorted_dirs):
-                dir_path, _ = self.sorted_dirs[self.selected_idx]
-                self.push_view({'type': 'dir_detail', 'data': {'dir_path': dir_path}})
+            # Get the display list to find what's selected
+            display_list = self.build_display_list()
+            if self.selected_idx < len(display_list):
+                item = display_list[self.selected_idx]
+
+                if item[0] == 'dir':
+                    # Drilling into a directory
+                    _, dir_path, _, _ = item
+                    self.push_view({'type': 'dir_detail', 'data': {'dir_path': dir_path}})
+
+                elif item[0] == 'collapse':
+                    # Toggle collapse/expand
+                    _, parent_path, _, _, _, _ = item
+                    if parent_path in self.expanded_groups:
+                        self.expanded_groups.discard(parent_path)
+                    else:
+                        self.expanded_groups.add(parent_path)
+                    self.invalidate_display_cache()
 
         elif view['type'] == 'dir_detail':
             # Drilling into a file from directory view
@@ -1392,11 +1564,15 @@ Actions:
         trash_type = None
 
         if view['type'] == 'main':
-            # Trashing a directory from main view
-            if self.selected_idx < len(self.sorted_dirs):
-                dir_path, _ = self.sorted_dirs[self.selected_idx]
-                item_to_trash = dir_path
-                trash_type = 'directory'
+            # Get the display list to find what's selected
+            display_list = self.build_display_list()
+            if self.selected_idx < len(display_list):
+                item = display_list[self.selected_idx]
+                if item[0] == 'dir':
+                    _, dir_path, _, _ = item
+                    item_to_trash = dir_path
+                    trash_type = 'directory'
+                # Can't trash a collapse line
 
         elif view['type'] == 'dir_detail':
             # Trashing a file from directory view
@@ -1757,8 +1933,21 @@ Actions:
                 else:
                     break
 
-            # ESC / Left arrow - go back
+            # ESC / Left arrow / h - go back (or collapse if on expanded collapse line)
             elif key in (27, curses.KEY_LEFT, ord('h')):
+                # Check if we're on an expanded collapse line in main view
+                if view['type'] == 'main':
+                    display_list = self.build_display_list()
+                    if self.selected_idx < len(display_list):
+                        item = display_list[self.selected_idx]
+                        if item[0] == 'collapse':
+                            _, parent_path, _, _, _, _ = item
+                            if parent_path in self.expanded_groups:
+                                # Collapse the group instead of going back
+                                self.expanded_groups.discard(parent_path)
+                                self.invalidate_display_cache()
+                                continue
+
                 if not self.pop_view():
                     self.show_quit_message = True
                 continue
@@ -1809,8 +1998,8 @@ Actions:
                 visible_lines = usable_height - 5
                 self.scroll_offset = max(0, list_size - visible_lines)
 
-            # Enter key - drill down
-            elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
+            # Enter / Right arrow / l key - drill down or expand collapse
+            elif key in (curses.KEY_ENTER, ord('\n'), ord('\r'), curses.KEY_RIGHT, ord('l')):
                 self.handle_enter_key(view)
                 continue
 
