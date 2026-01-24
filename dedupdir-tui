@@ -2142,6 +2142,12 @@ Actions:
 
         # Main loop
         while True:
+            # Set timeout for getch() - use 500ms during verification for progress updates
+            if self.cached_hashes and not self.verification_complete and not self.verification_error:
+                stdscr.timeout(500)  # 500ms timeout during verification
+            else:
+                stdscr.timeout(-1)  # Blocking mode when verification complete
+
             # Check for background verification errors
             verification_error = self.check_verification_status()
             if verification_error:
@@ -2195,6 +2201,10 @@ Actions:
 
             # Handle input
             key = stdscr.getch()
+
+            # Handle timeout (no key pressed) - just redraw to update verification progress
+            if key == -1:
+                continue
 
             # Handle terminal resize
             if key == curses.KEY_RESIZE:
