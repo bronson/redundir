@@ -99,6 +99,8 @@ class DedupdirTUI:
         # Collapsed directory groups - set of parent dir paths that are collapsed
         self.expanded_groups = set()  # Groups that have been explicitly expanded
         self._display_list_cache = None  # Cached display list for performance
+        self._dir_sizes_cache = {}  # Cache for directory sizes to avoid repeated stat() calls
+        self._relationship_cache = None  # Cache for parent-child relationships (expensive to compute)
 
         # Data will be populated by scan()
         self.sorted_dirs = []
@@ -146,19 +148,38 @@ class DedupdirTUI:
         """Invalidate the display list cache, forcing a rebuild on next access."""
         self._display_list_cache = None
 
-    def build_display_list(self):
-        """Build display list with collapsible groups for 100% redundant subdirectories.
+    def invalidate_relationship_cache(self):
+        """Invalidate the relationship cache, forcing a rebuild on next access."""
+        self._relationship_cache = None
+        self._display_list_cache = None  # Display list depends on relationships
 
-        Returns list of display items, each is either:
-        - ('dir', dir_path, stats, is_child) - a regular directory entry (is_child=True if under a collapse)
-        - ('collapse', parent_path, child_dirs, total_files, total_dups) - a collapse line
-        """
-        # Return cached version if available
-        if self._display_list_cache is not None:
-            return self._display_list_cache
+    def invalidate_size_cache(self):
+        """Invalidate the directory sizes cache."""
+        self._dir_sizes_cache = {}
+
+    def get_dir_size(self, dir_path):
+        """Get total size of files in a directory (cached)."""
+        if dir_path in self._dir_sizes_cache:
+            return self._dir_sizes_cache[dir_path]
+
+        total_size = 0
+        for fpath in self.dir_all_files.get(dir_path, []):
+            try:
+                total_size += fpath.stat().st_size
+            except:
+                pass
+
+        self._dir_sizes_cache[dir_path] = total_size
+        return total_size
+
+    def build_relationship_cache(self):
+        """Build and cache parent-child relationships (expensive operation)."""
+        if self._relationship_cache is not None:
+            return self._relationship_cache
 
         if not self.sorted_dirs:
-            return []
+            self._relationship_cache = (set(), {})
+            return self._relationship_cache
 
         # First pass: identify which directories are 100% redundant
         fully_redundant = set()
@@ -168,11 +189,7 @@ class DedupdirTUI:
 
         # Second pass: find parent-child relationships among sorted_dirs
         # A child is a subdirectory of a parent if parent is a prefix of child
-        dir_paths = [d[0] for d in self.sorted_dirs]
-
-        # Map from parent -> list of direct children that are also in sorted_dirs
         children_map = {}  # parent_path -> [(child_path, stats), ...]
-        has_parent = set()  # dirs that have a parent in the list
 
         for i, (dir_path, stats) in enumerate(self.sorted_dirs):
             # Find the closest parent in the list
@@ -188,10 +205,29 @@ class DedupdirTUI:
                         if potential_parent not in children_map:
                             children_map[potential_parent] = []
                         children_map[potential_parent].append((dir_path, stats))
-                        has_parent.add(dir_path)
                         break
 
-        # Third pass: build display list
+        self._relationship_cache = (fully_redundant, children_map)
+        return self._relationship_cache
+
+    def build_display_list(self):
+        """Build display list with collapsible groups for 100% redundant subdirectories.
+
+        Returns list of display items, each is either:
+        - ('dir', dir_path, stats, is_child) - a regular directory entry (is_child=True if under a collapse)
+        - ('collapse', parent_path, child_dirs, total_files, total_dups) - a collapse line
+        """
+        # Return cached version if available
+        if self._display_list_cache is not None:
+            return self._display_list_cache
+
+        if not self.sorted_dirs:
+            return []
+
+        # Get cached relationship data (expensive to compute)
+        fully_redundant, children_map = self.build_relationship_cache()
+
+        # Build display list using cached relationships
         display_list = []
         skip_dirs = set()  # Dirs to skip because they're in a collapse
         child_of_collapse = set()  # Dirs that are children of an expanded collapse
@@ -220,14 +256,8 @@ class DedupdirTUI:
                     total_files = sum(s[1] for _, s in children)
                     total_dups = sum(s[0] for _, s in children)
 
-                    # Calculate total size of files in collapsed directories
-                    total_size = 0
-                    for child_path, _ in children:
-                        for fpath in self.dir_all_files.get(child_path, []):
-                            try:
-                                total_size += fpath.stat().st_size
-                            except:
-                                pass
+                    # Calculate total size of files in collapsed directories (using cache)
+                    total_size = sum(self.get_dir_size(child_path) for child_path, _ in children)
 
                     # Add collapse line
                     child_paths = [cp for cp, _ in children]
@@ -562,7 +592,8 @@ class DedupdirTUI:
 
         # Recalculate sorted_dirs with all directories
         self.recalculate_sorted_dirs()
-        self.invalidate_display_cache()
+        self.invalidate_relationship_cache()
+        self.invalidate_size_cache()
 
         return True
 
@@ -653,7 +684,8 @@ class DedupdirTUI:
 
         # Rescan to update data structures
         self.scan(quiet=True)
-        self.invalidate_display_cache()
+        self.invalidate_relationship_cache()
+        self.invalidate_size_cache()
 
         return True
 
