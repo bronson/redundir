@@ -6,6 +6,7 @@
 * add automatic caching to speed up subsequent runs
 * confirm quitting unless you're at the top level
 * add scroll indicators to panes
+* can now 'o' on directories to open them in the platform viewer
 
 ## [0.1.0] - 2026-01-21
 * Rename project from redundir to dedupdir.

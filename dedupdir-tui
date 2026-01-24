@@ -1747,7 +1747,7 @@ Actions:
     def get_hint_text(self, mode):
         """Get hint bar text for the given mode."""
         if mode == 'main':
-            return "↑↓:Navigate  Enter:Drill Down  t:Trash  T:View Trash  q:Quit"
+            return "↑↓:Navigate  Enter:Drill Down  o:Open  t:Trash  T:View Trash  q:Quit"
         elif mode == 'dir_detail':
             return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  t:Trash  Esc:Back"
         elif mode == 'file_detail':
@@ -2072,23 +2072,36 @@ Actions:
                     scroll_offset = max_offset
 
     def handle_open_key(self, view):
-        """Handle 'o' key - open file with system default application."""
-        file_path = None
+        """Handle 'o' key - open file or directory with system default application."""
+        path_to_open = None
 
-        if view['type'] == 'dir_detail':
-            # View file from directory view
+        if view['type'] == 'main':
+            # Open directory from main view
+            display_list = self.build_display_list()
+            if self.selected_idx < len(display_list):
+                item = display_list[self.selected_idx]
+                if item[0] == 'dir':
+                    _, dir_path, _, _ = item
+                    path_to_open = dir_path
+
+        elif view['type'] == 'dir_detail':
+            # Open file from directory view
             dir_path = view['data']['dir_path']
             files = self.get_all_files_with_counts(dir_path)
 
             if self.selected_idx < len(files):
                 _, _, file_path = files[self.selected_idx]
+                path_to_open = file_path
 
         elif view['type'] == 'file_detail':
-            # Open the file itself
+            # Open directory from file detail view
             file_path = view['data']['file_path']
+            dirs_with_file = self.get_dirs_containing_file(file_path)
+            if self.selected_idx < len(dirs_with_file):
+                path_to_open = dirs_with_file[self.selected_idx]
 
-        if file_path and file_path.is_file():
-            self.open_file_with_system_app(file_path)
+        if path_to_open and path_to_open.exists():
+            self.open_file_with_system_app(path_to_open)
 
     def draw_all_panes(self, usable_height, width, do_update=True):
         """Draw all panes in the view stack with proper indentation and frozen selections.
