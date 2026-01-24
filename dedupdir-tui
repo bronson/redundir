@@ -105,6 +105,7 @@ class DedupdirTUI:
         self._display_list_cache = None  # Cached display list for performance
         self._dir_sizes_cache = {}  # Cache for directory sizes to avoid repeated stat() calls
         self._relationship_cache = None  # Cache for parent-child relationships (expensive to compute)
+        self._recursive_stats_cache = {}  # Cache for recursive directory stats
 
         # Data will be populated by scan()
         self.sorted_dirs = []
@@ -195,16 +196,15 @@ class DedupdirTUI:
         return None
 
     def recalculate_sorted_dirs(self):
-        """Recalculate sorted_dirs including ALL directories, even those with 0% redundancy."""
+        """Recalculate sorted_dirs including ALL directories, even those with 0% redundancy.
+
+        Uses recursive stats so each directory's redundancy includes all subdirectories.
+        """
         all_dirs_with_stats = []
-        for dir_path, files in self.dir_all_files.items():
-            if dir_path in self.dir_stats:
-                # Directory has duplicates
-                all_dirs_with_stats.append((dir_path, self.dir_stats[dir_path]))
-            else:
-                # Directory has no duplicates - add with 0/N stats
-                total_files = len(files)
-                all_dirs_with_stats.append((dir_path, (0, total_files)))
+        for dir_path in self.dir_all_files.keys():
+            # Get recursive stats (includes all subdirectories)
+            stats = self.get_recursive_stats(dir_path)
+            all_dirs_with_stats.append((dir_path, stats))
 
         # Sort directories by redundancy score
         self.sorted_dirs = sorted(
@@ -222,8 +222,12 @@ class DedupdirTUI:
         self._display_list_cache = None  # Display list depends on relationships
 
     def invalidate_size_cache(self):
-        """Invalidate the directory sizes cache."""
+        """Invalidate the directory size cache."""
         self._dir_sizes_cache = {}
+
+    def invalidate_recursive_stats_cache(self):
+        """Invalidate the recursive stats cache."""
+        self._recursive_stats_cache = {}
 
     def get_dir_size(self, dir_path):
         """Get total size of files in a directory (cached)."""
@@ -249,31 +253,31 @@ class DedupdirTUI:
             self._relationship_cache = (set(), {})
             return self._relationship_cache
 
-        # First pass: identify which directories are 100% redundant
+        # First pass: identify which directories are 100% redundant (recursively)
         fully_redundant = set()
-        for dir_path, (dups, total) in self.sorted_dirs:
+        for dir_path, _ in self.sorted_dirs:
+            dups, total = self.get_recursive_stats(dir_path)
             if total > 0 and dups == total:
                 fully_redundant.add(dir_path)
 
         # Second pass: find parent-child relationships among sorted_dirs
-        # A child is a subdirectory of a parent if parent is a prefix of child
+        # A child is a DIRECT subdirectory of a parent (no intermediate dirs in sorted_dirs)
         children_map = {}  # parent_path -> [(child_path, stats), ...]
 
         for i, (dir_path, stats) in enumerate(self.sorted_dirs):
-            # Find the closest parent in the list
-            for j, (potential_parent, _) in enumerate(self.sorted_dirs):
+            # Find all parents of this directory that are in sorted_dirs
+            parents_in_list = []
+            for j, (potential_parent, parent_stats) in enumerate(self.sorted_dirs):
                 if i != j and self.is_subdir(dir_path, potential_parent):
-                    # Check if there's a closer parent
-                    is_closest = True
-                    for k, (other_parent, _) in enumerate(self.sorted_dirs):
-                        if k != i and k != j and self.is_subdir(dir_path, other_parent) and self.is_subdir(other_parent, potential_parent):
-                            is_closest = False
-                            break
-                    if is_closest:
-                        if potential_parent not in children_map:
-                            children_map[potential_parent] = []
-                        children_map[potential_parent].append((dir_path, stats))
-                        break
+                    parents_in_list.append((potential_parent, parent_stats, len(str(potential_parent))))
+
+            # The closest parent is the one with the longest path
+            if parents_in_list:
+                parents_in_list.sort(key=lambda x: x[2], reverse=True)
+                closest_parent, _, _ = parents_in_list[0]
+                if closest_parent not in children_map:
+                    children_map[closest_parent] = []
+                children_map[closest_parent].append((dir_path, stats))
 
         self._relationship_cache = (fully_redundant, children_map)
         return self._relationship_cache
@@ -312,14 +316,14 @@ class DedupdirTUI:
 
             # Check if this directory has collapsible children
             if dir_path in children_map and dir_path in fully_redundant:
-                children = children_map[dir_path]
-                # Check if ALL children are 100% redundant
-                all_children_redundant = all(
-                    child_path in fully_redundant
-                    for child_path, _ in children
-                )
+                all_children = children_map[dir_path]
+                # Filter to only children that are 100% redundant
+                children = [
+                    (child_path, stats) for child_path, stats in all_children
+                    if child_path in fully_redundant
+                ]
 
-                if all_children_redundant and children:
+                if children:
                     # Calculate totals for the collapse
                     total_files = sum(s[1] for _, s in children)
                     total_dups = sum(s[0] for _, s in children)
@@ -620,18 +624,48 @@ class DedupdirTUI:
         file_hash = self.file_to_hash[file_path]
         return len(self.hash_to_dirs.get(file_hash, set()))
 
-    def is_dir_fully_redundant(self, dir_path):
-        """Check if all files in directory exist in other directories."""
-        files = self.dir_all_files.get(dir_path, [])
-        if not files:
-            return True
+    def get_recursive_stats(self, dir_path):
+        """Get stats including all files in subdirectories.
 
-        num_roots = len(self.root_paths)
-        for fpath in files:
-            count = self.get_file_redundancy_count(fpath)
-            if count < num_roots:
-                return False
-        return True
+        Returns (duplicates, total) counting all files recursively under dir_path.
+        Uses caching for performance.
+        """
+        # Check cache first
+        if dir_path in self._recursive_stats_cache:
+            return self._recursive_stats_cache[dir_path]
+
+        total_dups = 0
+        total_files = 0
+
+        # Include this directory's own files
+        if dir_path in self.dir_stats:
+            dups, total = self.dir_stats[dir_path]
+            total_dups += dups
+            total_files += total
+        elif dir_path in self.dir_all_files:
+            total_files += len(self.dir_all_files[dir_path])
+
+        # Include all subdirectories
+        for other_dir in self.dir_all_files.keys():
+            if other_dir != dir_path and self.is_subdir(other_dir, dir_path):
+                if other_dir in self.dir_stats:
+                    dups, total = self.dir_stats[other_dir]
+                    total_dups += dups
+                    total_files += total
+                else:
+                    total_files += len(self.dir_all_files[other_dir])
+
+        result = (total_dups, total_files)
+        self._recursive_stats_cache[dir_path] = result
+        return result
+
+    def is_dir_fully_redundant(self, dir_path):
+        """Check if all files in directory (recursively) exist in other directories."""
+        # Get recursive stats - if not 100% redundant, it's not fully redundant
+        dups, total = self.get_recursive_stats(dir_path)
+        if total == 0:
+            return True
+        return dups == total
 
     def trash_item(self, item_path, item_type):
         """Move item to trash and update data structures."""
@@ -679,6 +713,7 @@ class DedupdirTUI:
         self.recalculate_sorted_dirs()
         self.invalidate_relationship_cache()
         self.invalidate_size_cache()
+        self.invalidate_recursive_stats_cache()
 
         return True
 
@@ -790,6 +825,7 @@ class DedupdirTUI:
         self.scan(quiet=True)
         self.invalidate_relationship_cache()
         self.invalidate_size_cache()
+        self.invalidate_recursive_stats_cache()
 
         return True
 
