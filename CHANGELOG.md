@@ -11,6 +11,8 @@
 * added 's'/'S' to switch the column used to sort the data
 * make the trash viewer hierarchical so it can handle lots of files
 * added 'P' key to promote (move) a single item to their parent
+* added '^R' key to reload and refresh all redundancy scores
+
 
 ## [0.1.0] - 2026-01-21
 * Rename project from redundir to dedupdir.

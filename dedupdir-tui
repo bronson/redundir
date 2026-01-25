@@ -1943,6 +1943,7 @@ Actions:
   P                 Promote item to parent directory
   u                 Undo last trash operation
   T                 View trash
+  Ctrl-R            Reload and refresh all scores
   q                 Quit
 
 Directories showing 100% redundancy are safe to trash -
@@ -2151,7 +2152,7 @@ Actions:
     def get_hint_text(self, mode):
         """Get hint bar text for the given mode."""
         if mode == 'main':
-            return "↑↓:Navigate  Enter:Drill Down  s:Sort  o:Open  t:Trash  T:View Trash  q:Quit"
+            return "↑↓:Navigate  Enter:Drill Down  s:Sort  o:Open  t:Trash  T:Trash  ^R:Reload  q:Quit"
         elif mode == 'dir_detail':
             return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  t:Trash  P:Promote  Esc:Back"
         elif mode == 'file_detail':
@@ -2985,6 +2986,11 @@ Actions:
             # U key - undo last trash
             elif key in (ord('u'), ord('U')):
                 self.undo_last_trash()
+                continue
+
+            # Ctrl-R - rescan and refresh
+            elif key == 18:  # Ctrl-R
+                self.rescan()
                 continue
 
             # Navigation keys
