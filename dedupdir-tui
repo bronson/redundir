@@ -151,6 +151,13 @@ class DedupdirTUI:
         if self.cached_hashes:
             self.start_background_verification()
 
+    def invalidate_all_caches(self):
+        """Invalidate all caches. Call before recalculating stats."""
+        self.invalidate_relationship_cache()
+        self.invalidate_size_cache()
+        self.invalidate_recursive_stats_cache()
+        self.invalidate_dir_contents_cache()
+
     def rescan(self):
         """Invalidate all caches and rescan the directory tree.
 
@@ -158,10 +165,7 @@ class DedupdirTUI:
         Caches must be invalidated BEFORE scan() because scan() calls
         recalculate_sorted_dirs() which uses get_recursive_stats() (cached).
         """
-        self.invalidate_relationship_cache()
-        self.invalidate_size_cache()
-        self.invalidate_recursive_stats_cache()
-        self.invalidate_dir_contents_cache()
+        self.invalidate_all_caches()
         self.scan(quiet=True)
 
     def start_background_verification(self):
@@ -983,12 +987,11 @@ class DedupdirTUI:
         else:  # directory
             self.remove_directory_from_data(item_path)
 
+        # Invalidate caches BEFORE recalculate (it uses get_recursive_stats which is cached)
+        self.invalidate_all_caches()
+
         # Recalculate sorted_dirs with all directories
         self.recalculate_sorted_dirs()
-        self.invalidate_relationship_cache()
-        self.invalidate_size_cache()
-        self.invalidate_recursive_stats_cache()
-        self.invalidate_dir_contents_cache()
 
         return True
 
