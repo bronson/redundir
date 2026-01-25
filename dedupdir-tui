@@ -85,6 +85,7 @@ class DedupdirTUI:
         self.selected_idx = 0
         self.scroll_offset = 0
         self.show_quit_message = False
+        self.alert_message = None  # Message to show in dismissable alert dialog
 
         # View stack for drill-down navigation
         # Each entry is a dict: {'type': 'main'|'dir_detail'|'file_detail', 'data': {...}}
@@ -1930,6 +1931,7 @@ Sorting:
 Actions:
   o                 Open directory in file browser
   t                 Trash selected directory
+  P                 Promote item to parent directory
   u                 Undo last trash operation
   T                 View trash
   q                 Quit
@@ -1957,6 +1959,47 @@ Actions:
 Files are moved to ~dedupdir-trash/ in each root
 directory. They remain there until you manually
 delete the trash directories."""
+
+        elif mode == 'dir_detail':
+            return """Directory Detail View
+
+Navigation:
+  ↑/↓ or j/k        Navigate files and subdirectories
+  Enter or l/→      Drill into file or subdirectory
+  Esc or h/←        Go back to previous view
+  PgUp/PgDn         Page up/down
+  Ctrl-B/Ctrl-F     Page up/down
+  Home/End or g/G   Jump to first/last item
+
+Actions:
+  v                 View selected file
+  o                 Open selected item
+  t                 Trash selected item
+  P                 Promote: move item to parent directory
+  u                 Undo last trash operation
+  q                 Quit (with confirmation)
+
+The redundancy count shows how many directories contain
+a copy of each file. Files with count 1 are unique."""
+
+        elif mode == 'file_detail':
+            return """File Detail View
+
+This view shows all directories containing copies of
+a specific file (identified by content hash).
+
+Navigation:
+  ↑/↓ or j/k        Navigate directories
+  Enter or l/→      Drill into directory
+  Esc or h/←        Go back to previous view
+  PgUp/PgDn         Page up/down
+
+Actions:
+  v                 View file content
+  o                 Open file
+  t                 Trash selected directory
+  u                 Undo last trash operation
+  q                 Quit (with confirmation)"""
 
         elif mode == 'viewer':
             return """File Viewer
@@ -2101,7 +2144,7 @@ Actions:
         if mode == 'main':
             return "↑↓:Navigate  Enter:Drill Down  s:Sort  o:Open  t:Trash  T:View Trash  q:Quit"
         elif mode == 'dir_detail':
-            return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  t:Trash  Esc:Back"
+            return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  t:Trash  P:Promote  Esc:Back"
         elif mode == 'file_detail':
             return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  t:Trash  Esc:Back"
         elif mode == 'trash':
@@ -2211,8 +2254,17 @@ Actions:
             else:
                 break
 
-    def draw_confirmation_dialog(self, stdscr, message, prompt="Confirm? (y/n)"):
-        """Draw a confirmation dialog in the center of the screen."""
+    def draw_dialog(self, stdscr, message, prompt, title=None, message_style=0, prompt_style=curses.A_REVERSE):
+        """Draw a dialog box in the center of the screen.
+
+        Args:
+            stdscr: curses screen
+            message: Message text (can contain newlines)
+            prompt: Prompt text shown at bottom
+            title: Optional title shown in top border
+            message_style: curses attribute for message text (default: none)
+            prompt_style: curses attribute for prompt text (default: A_REVERSE)
+        """
         height, width = stdscr.getmaxyx()
 
         # Dialog dimensions
@@ -2225,6 +2277,12 @@ Actions:
         dialog = curses.newwin(dialog_height, dialog_width, dialog_y, dialog_x)
         dialog.clear()
         dialog.box()
+
+        # Title (if provided)
+        content_start_y = 1
+        if title:
+            dialog.addstr(0, (dialog_width - len(title)) // 2, title, curses.A_BOLD | curses.A_REVERSE)
+            content_start_y = 2
 
         # Split message by newlines first, then word wrap each line
         lines = []
@@ -2245,13 +2303,33 @@ Actions:
 
         # Draw message lines
         for i, line in enumerate(lines[:5]):  # Max 5 lines
-            dialog.addstr(1 + i, 2, line, curses.A_BOLD)
+            dialog.addstr(content_start_y + i, 2, line, message_style)
 
         # Draw prompt
-        dialog.addstr(dialog_height - 2, (dialog_width - len(prompt)) // 2, prompt, curses.A_REVERSE)
+        dialog.addstr(dialog_height - 2, (dialog_width - len(prompt)) // 2, prompt, prompt_style)
 
         dialog.noutrefresh()
         return dialog
+
+    def draw_alert_dialog(self, stdscr, message):
+        """Draw a dismissable alert dialog in the center of the screen."""
+        return self.draw_dialog(
+            stdscr, message,
+            prompt="Press any key to continue",
+            title=" Alert ",
+            message_style=0,
+            prompt_style=curses.A_DIM
+        )
+
+    def draw_confirmation_dialog(self, stdscr, message, prompt="Confirm? (y/n)"):
+        """Draw a confirmation dialog in the center of the screen."""
+        return self.draw_dialog(
+            stdscr, message,
+            prompt=prompt,
+            title=None,
+            message_style=curses.A_BOLD,
+            prompt_style=curses.A_REVERSE
+        )
 
     def handle_enter_key(self, view):
         """Handle Enter key - drill down into directories or files."""
@@ -2392,6 +2470,76 @@ Actions:
                 # Trash immediately
                 self.trash_item(item_to_trash, trash_type)
                 self.clamp_selection_after_trash()
+
+    def handle_promote_key(self, view):
+        """Handle 'P' key - move selected item to parent directory."""
+        if view['type'] != 'dir_detail':
+            return  # Only works in directory detail view
+
+        dir_path = view['data']['dir_path']
+        items = self.get_all_files_with_counts(dir_path)
+
+        if self.selected_idx >= len(items):
+            return
+
+        _, _, item_path, item_type = items[self.selected_idx]
+        if item_type == 'divider' or item_path is None:
+            return  # Can't promote a divider
+
+        # Calculate destination in parent directory
+        parent_dir = dir_path.parent
+        dest_path = parent_dir / item_path.name
+
+        # Check if destination already exists
+        if dest_path.exists():
+            parent_path_display = self.get_path_with_root(parent_dir)
+            self.alert_message = f"Cannot promote '{item_path.name}':\n\nAn item with that name already exists in:\n\n{parent_path_display}"
+            return
+
+        # Check if parent is within one of our root paths
+        is_within_roots = any(
+            parent_dir == root or self.is_subdir(parent_dir, root)
+            for root in self.root_paths
+        )
+        if not is_within_roots:
+            self.alert_message = "Cannot promote:\n\nThe parent directory is outside the scanned directories."
+            return
+
+        # Move the item
+        try:
+            shutil.move(str(item_path), str(dest_path))
+        except Exception as e:
+            self.alert_message = f"Cannot promote:\n\n{e}"
+            return
+
+        # Check if the previous view is the parent directory
+        prev_view_is_parent = False
+        if len(self.view_stack) > 1:
+            prev_view = self.view_stack[-2]
+            if prev_view['type'] == 'dir_detail':
+                prev_dir = prev_view['data']['dir_path']
+                if prev_dir == parent_dir:
+                    prev_view_is_parent = True
+
+        # Rescan to update data structures
+        self.scan(quiet=True)
+        self.invalidate_relationship_cache()
+        self.invalidate_size_cache()
+        self.invalidate_recursive_stats_cache()
+        self.invalidate_dir_contents_cache()
+
+        if prev_view_is_parent:
+            # Pop current view and highlight the moved item in parent
+            self.pop_view()
+            # Find the moved item in the parent's item list
+            parent_items = self.get_all_files_with_counts(parent_dir)
+            for i, (_, _, path, _) in enumerate(parent_items):
+                if path == dest_path:
+                    self.selected_idx = i
+                    break
+        else:
+            # Stay in current view, adjust selection if needed
+            self.clamp_selection_after_trash()
 
     def handle_view_key(self, view, stdscr, height, width):
         """Handle 'v' key - view file content."""
@@ -2629,6 +2777,12 @@ Actions:
                 self.draw_hint_bar(stdscr, 'confirm')
                 curses.doupdate()
 
+            elif self.alert_message is not None:
+                # Draw alert dialog - draw all panes then overlay the dialog
+                self.draw_all_panes(usable_height, width, do_update=False)
+                self.draw_alert_dialog(stdscr, self.alert_message)
+                curses.doupdate()
+
             elif self.confirm_trash_item is not None:
                 # Draw confirmation dialog - draw all panes then overlay the dialog
                 self.draw_all_panes(usable_height, width, do_update=False)
@@ -2673,6 +2827,11 @@ Actions:
                     continue
                 else:
                     continue
+
+            # Handle alert dialog (dismiss with any key)
+            if self.alert_message is not None:
+                self.alert_message = None
+                continue
 
             # Handle trash confirmation dialog
             if self.confirm_trash_item is not None:
@@ -2881,6 +3040,11 @@ Actions:
             # 'o' key - open file
             elif key in (ord('o'), ord('O')):
                 self.handle_open_key(view)
+                continue
+
+            # 'P' key - promote item to parent directory
+            elif key == ord('P'):
+                self.handle_promote_key(view)
                 continue
 
             # 's'/'S' key - cycle sort mode (main view only)
