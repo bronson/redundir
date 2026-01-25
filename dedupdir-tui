@@ -947,8 +947,18 @@ class DedupdirTUI:
             return True
         return dups == total
 
-    def trash_item(self, item_path, item_type):
-        """Move item to trash and update data structures."""
+    def trash_item(self, item_path, item_type, add_to_stack=True):
+        """Move item to trash and update data structures.
+
+        Args:
+            item_path: Path to the item to trash
+            item_type: 'file' or 'directory'
+            add_to_stack: If True, add to undo stack as single item.
+                         If False, caller is responsible for stack management.
+
+        Returns:
+            Tuple of (original_path_str, trash_path_str, is_dir) on success, None on failure.
+        """
         item_path = Path(item_path)
 
         # Find which root this item belongs to
@@ -962,7 +972,7 @@ class DedupdirTUI:
                 continue
 
         if not root_for_item:
-            return False
+            return None
 
         # Initialize trash dir for this root
         trash_dir = self.init_trash_dir_for_root(root_for_item)
@@ -978,10 +988,13 @@ class DedupdirTUI:
         try:
             shutil.move(str(item_path), str(trash_path))
         except Exception as e:
-            return False
+            return None
 
-        # Add to undo stack (store simple tuple)
-        self.trash_stack.append((str(item_path), str(trash_path), item_type == 'directory'))
+        trash_record = (str(item_path), str(trash_path), item_type == 'directory')
+
+        # Add to undo stack as single item if requested
+        if add_to_stack:
+            self.trash_stack.append([trash_record])
 
         # Update data structures
         if item_type == 'file':
@@ -995,7 +1008,7 @@ class DedupdirTUI:
         # Recalculate sorted_dirs with all directories
         self.recalculate_sorted_dirs()
 
-        return True
+        return trash_record
 
     def remove_file_from_data(self, file_path):
         """Remove a file from internal data structures."""
@@ -1081,30 +1094,39 @@ class DedupdirTUI:
         self.expanded_groups.discard(dir_path)
 
     def undo_last_trash(self):
-        """Undo the most recent trash operation."""
+        """Undo the most recent trash operation (which may be a group of items)."""
         if not self.trash_stack:
             return False
 
-        original_path_str, trash_path_str, is_dir = self.trash_stack.pop()
-        trash_path = Path(trash_path_str)
-        original_path = Path(original_path_str)
+        # Pop the group (list of trash records)
+        group = self.trash_stack.pop()
 
-        # Move back from trash
-        try:
-            original_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(trash_path), str(original_path))
-        except Exception as e:
-            # Put it back on stack if restore failed
-            self.trash_stack.append((original_path_str, trash_path_str, is_dir))
-            return False
+        # Restore items in reverse order (LIFO within the group)
+        restored = []
+        failed = []
+        for record in reversed(group):
+            original_path_str, trash_path_str, is_dir = record
+            trash_path = Path(trash_path_str)
+            original_path = Path(original_path_str)
 
-        # Clean up empty directories in trash
-        self.cleanup_empty_trash_dirs(trash_path.parent)
+            # Move back from trash
+            try:
+                original_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(trash_path), str(original_path))
+                restored.append(record)
+                # Clean up empty directories in trash
+                self.cleanup_empty_trash_dirs(trash_path.parent)
+            except Exception as e:
+                failed.append(record)
+
+        # If some failed, put them back on the stack
+        if failed:
+            self.trash_stack.append(failed)
 
         # Rescan to update data structures
         self.rescan()
 
-        return True
+        return len(restored) > 0
 
     def restore_from_trash(self, trash_record):
         """Restore an item from trash by its metadata record."""
@@ -1123,8 +1145,15 @@ class DedupdirTUI:
         # Clean up empty directories in trash
         self.cleanup_empty_trash_dirs(trash_path.parent)
 
-        # Remove from trash stack if present
-        self.trash_stack = [d for d in self.trash_stack if d[1] != trash_record['trash_path']]
+        # Remove from trash stack if present (groups are lists of (orig, trash, is_dir) tuples)
+        new_stack = []
+        for group in self.trash_stack:
+            # Filter out matching records from this group
+            filtered_group = [rec for rec in group if rec[1] != trash_record['trash_path']]
+            # Keep the group only if it still has records
+            if filtered_group:
+                new_stack.append(filtered_group)
+        self.trash_stack = new_stack
 
         # Rescan to update data structures
         self.rescan()
@@ -1944,10 +1973,10 @@ Sorting:
 
 Actions:
   o                 Open directory in file browser
-  t                 Trash selected directory
+  d                 Trash selected directory
   P                 Promote item to parent directory
   u                 Undo last trash operation
-  T                 View trash
+  t                 View/hide trash
   Ctrl-R            Reload and refresh all scores
   q                 Quit
 
@@ -1989,13 +2018,19 @@ Navigation:
 Actions:
   v                 View selected file
   o                 Open selected item
-  t                 Trash selected item
+  d                 Trash selected item
+  D                 Trash all files with same directory set
   P                 Promote: move item to parent directory
   u                 Undo last trash operation
+  t                 View/hide trash
   q                 Quit (with confirmation)
 
 The redundancy count shows how many directories contain
-a copy of each file. Files with count 1 are unique."""
+a copy of each file. Files with count 1 are unique.
+
+D trashes all files in current directory that have
+duplicates in exactly the same set of directories as the
+selected file. Useful for batch cleanup."""
 
         elif mode == 'file_detail':
             return """File Detail View
@@ -2012,8 +2047,9 @@ Navigation:
 Actions:
   v                 View file content
   o                 Open file
-  t                 Trash selected directory
+  d                 Trash selected directory
   u                 Undo last trash operation
+  t                 View/hide trash
   q                 Quit (with confirmation)"""
 
         elif mode == 'viewer':
@@ -2157,11 +2193,11 @@ Actions:
     def get_hint_text(self, mode):
         """Get hint bar text for the given mode."""
         if mode == 'main':
-            return "↑↓:Navigate  Enter:Drill Down  s:Sort  o:Open  t:Trash  T:Trash  ^R:Reload  q:Quit"
+            return "↑↓:Navigate  Enter:Drill Down  s:Sort  o:Open  d:Trash  t:Trash  ^R:Reload  q:Quit"
         elif mode == 'dir_detail':
-            return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  t:Trash  P:Promote  Esc:Back"
+            return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  d:Trash  D:Trash All  P:Promote  Esc:Back"
         elif mode == 'file_detail':
-            return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  t:Trash  Esc:Back"
+            return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  d:Trash  t:Trash  Esc:Back"
         elif mode == 'trash':
             if self.trash_path_stack:
                 return "↑↓:Navigate  Enter:Open  r:Restore  v:View  o:Open  h/Esc:Back"
@@ -2428,8 +2464,75 @@ Actions:
                 elif self.selected_idx >= len(items):
                     self.selected_idx = len(items) - 1
 
+    def handle_trash_matching_dirs_key(self, view):
+        """Handle Shift-T key - trash all files with matching directory sets.
+
+        In dir_detail view, when a file is selected, this finds all other files
+        in the current directory whose duplicates exist in exactly the same set
+        of directories as the selected file, and trashes them all as a group.
+        """
+        if view['type'] != 'dir_detail':
+            return
+
+        dir_path = view['data']['dir_path']
+        items = self.get_all_files_with_counts(dir_path)
+
+        if self.selected_idx >= len(items):
+            return
+
+        _, _, selected_path, item_type = items[self.selected_idx]
+
+        # Only works when a file is selected
+        if item_type != 'file':
+            return
+
+        # Get the set of directories containing the selected file
+        selected_dirs = set(self.get_dirs_containing_file(selected_path))
+
+        # Find all files in this directory with the same directory set
+        files_to_trash = []
+        for name, count, path, itype in items:
+            if itype != 'file':
+                continue
+            file_dirs = set(self.get_dirs_containing_file(path))
+            if file_dirs == selected_dirs:
+                files_to_trash.append(path)
+
+        if not files_to_trash:
+            return
+
+        # Check if any file needs confirmation (is unique / count <= 1)
+        needs_confirmation = False
+        for fpath in files_to_trash:
+            count = self.get_file_redundancy_count(fpath)
+            if count <= 1:
+                needs_confirmation = True
+                break
+
+        if needs_confirmation:
+            # Store pending multi-trash for confirmation
+            self.confirm_trash_item = files_to_trash
+            self.confirm_trash_type = 'multi_file'
+        else:
+            # Trash all files as a group
+            self.trash_files_as_group(files_to_trash)
+            self.clamp_selection_after_trash()
+
+    def trash_files_as_group(self, file_paths):
+        """Trash multiple files as a single undo group."""
+        group = []
+        for fpath in file_paths:
+            record = self.trash_item(fpath, 'file', add_to_stack=False)
+            if record:
+                group.append(record)
+
+        if group:
+            self.trash_stack.append(group)
+
+        return len(group)
+
     def handle_trash_key(self, view):
-        """Handle 't' key - trash selected item."""
+        """Handle backspace/\\ key - trash selected item."""
         item_to_trash = None
         trash_type = None
 
@@ -2469,7 +2572,14 @@ Actions:
             needs_confirmation = False
             num_roots = len(self.root_paths)
 
-            if trash_type == 'file':
+            if trash_type == 'multi_file':
+                # Multi-file: check if any file is unique
+                for fpath in item_to_trash:
+                    count = self.get_file_redundancy_count(fpath)
+                    if count <= 1:
+                        needs_confirmation = True
+                        break
+            elif trash_type == 'file':
                 count = self.get_file_redundancy_count(item_to_trash)
                 # Confirm if this is the only copy (count <= 1)
                 if count <= 1:
@@ -2483,8 +2593,8 @@ Actions:
                 self.confirm_trash_type = trash_type
             else:
                 # Trash immediately
-                self.trash_item(item_to_trash, trash_type)
-                self.clamp_selection_after_trash()
+                if self.trash_item(item_to_trash, trash_type):
+                    self.clamp_selection_after_trash()
 
     def handle_promote_key(self, view):
         """Handle 'P' key - move selected item to parent directory."""
@@ -2799,8 +2909,12 @@ Actions:
                 self.draw_all_panes(usable_height, width, do_update=False)
 
                 # Draw confirmation dialog on top of all panes
-                rel_path = self.get_path_with_root(self.confirm_trash_item)
-                message = f"There is only one copy of\n\n{rel_path}\n\nIf you trash it, you will lose data."
+                if self.confirm_trash_type == 'multi_file':
+                    count = len(self.confirm_trash_item)
+                    message = f"You are about to trash {count} files.\n\nSome may be unique copies.\nIf you trash them, you may lose data."
+                else:
+                    rel_path = self.get_path_with_root(self.confirm_trash_item)
+                    message = f"There is only one copy of\n\n{rel_path}\n\nIf you trash it, you will lose data."
                 self.draw_confirmation_dialog(stdscr, message, "Trash anyway? (y/n)")
                 self.draw_hint_bar(stdscr, 'confirm')
                 curses.doupdate()
@@ -2849,9 +2963,15 @@ Actions:
                 if key in (ord('q'), ord('Q')):
                     break
                 if key in (ord('y'), ord('Y')):
-                    item_path, item_type = self.confirm_trash_item, self.confirm_trash_type
-                    self.trash_item(item_path, item_type)
-                    self.clamp_selection_after_trash()
+                    if self.confirm_trash_type == 'multi_file':
+                        # Multi-file trash from Shift-T
+                        self.trash_files_as_group(self.confirm_trash_item)
+                        self.clamp_selection_after_trash()
+                    else:
+                        # Single item trash
+                        item_path, item_type = self.confirm_trash_item, self.confirm_trash_type
+                        if self.trash_item(item_path, item_type):
+                            self.clamp_selection_after_trash()
                     self.confirm_trash_item = None
                     self.confirm_trash_type = None
                     continue
@@ -2869,7 +2989,7 @@ Actions:
             if self.viewing_trash:
                 if key in (ord('q'), ord('Q')):
                     break
-                elif key in (ord('T'),):
+                elif key == ord('t'):
                     if not self.show_no_duplicates_message:
                         self.viewing_trash = False
                         self.trash_path_stack = []  # Reset navigation
@@ -2979,13 +3099,24 @@ Actions:
                 self.show_help_viewer(stdscr, view['type'])
                 continue
 
-            # T key - view trash
-            elif key in (ord('T'),):
+            # t key - toggle trash viewer
+            elif key == ord('t'):
                 if not self.viewing_trash:
                     self.viewing_trash = True
                     self.trash_selected_idx = 0
                     self.trash_offset = 0
                     self.trash_path_stack = []  # Start at top level
+                continue
+
+            # D key - trash all files with matching directories (dir_detail view only)
+            elif key == ord('D'):
+                if view['type'] == 'dir_detail':
+                    dir_path = view['data']['dir_path']
+                    items = self.get_all_files_with_counts(dir_path)
+                    if self.selected_idx < len(items):
+                        _, _, _, item_type = items[self.selected_idx]
+                        if item_type == 'file':
+                            self.handle_trash_matching_dirs_key(view)
                 continue
 
             # U key - undo last trash
@@ -3043,10 +3174,12 @@ Actions:
                 self.handle_enter_key(view)
                 continue
 
-            # 't' key - trash item
-            elif key == ord('t'):
+            # d or Backspace key - trash item
+            elif key in (curses.KEY_BACKSPACE, 127, ord('d')):
                 self.handle_trash_key(view)
                 continue
+
+
 
             # 'v' key - view file
             elif key in (ord('v'), ord('V')):

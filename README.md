@@ -110,10 +110,11 @@ Supports scanning multiple directories just like the CLI tool.
 - `Home`/`End` or `<`/`>` - Jump to first/last item
 - `v` - View selected file (text files, images with EXIF data, or hex dump for binaries)
 - `o` - Open selected file with system default application (images, audio, video, documents, etc.)
-- `t` - Trash selected file or directory (moves to `~dedupdir-trash/` with confirmation for non-redundant items)
+- `Backspace`/`d` - Trash selected file or directory (moves to `~dedupdir-trash/` with confirmation for non-redundant items)
+- `D` - trash all files in the current directory that are similarly redundant (trash a group of files)
 - `P` - Promote: move selected item to parent directory (in directory detail view)
 - `u` - Undo last trash operation (progressively restores trashed items)
-- `T` - View trash (`r` to restore, `v` to view, `o` to open, `T` or `Esc` to exit)
+- `t` - View trash (`r` to restore, `v` to view, `o` to open, `T` or `Esc` to exit)
 - `?` - Show context-sensitive help
 - `q` - Quit
 
