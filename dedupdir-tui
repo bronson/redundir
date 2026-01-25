@@ -2378,7 +2378,8 @@ Actions:
 
             if trash_type == 'file':
                 count = self.get_file_redundancy_count(item_to_trash)
-                if count < num_roots:
+                # Confirm if this is the only copy (count <= 1)
+                if count <= 1:
                     needs_confirmation = True
             else:  # directory
                 if not self.is_dir_fully_redundant(item_to_trash):
