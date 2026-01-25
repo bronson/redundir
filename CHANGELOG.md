@@ -8,6 +8,7 @@
 * add scroll indicators to panes
 * can now 'o' on directories to open them in the platform viewer
 * parent dirs now incorporate their children's redundancy scores
+* added 's'/'S' to switch the column used to sort the data
 
 ## [0.1.0] - 2026-01-21
 * Rename project from redundir to dedupdir.

@@ -107,6 +107,10 @@ class DedupdirTUI:
         self._relationship_cache = None  # Cache for parent-child relationships (expensive to compute)
         self._recursive_stats_cache = {}  # Cache for recursive directory stats
 
+        # Sort mode: 'redundancy', 'duplicates', 'total', 'path', 'size', 'mtime'
+        self.sort_mode = 'redundancy'
+        self.sort_modes = ['redundancy', 'duplicates', 'total', 'path', 'size', 'mtime']
+
         # Data will be populated by scan()
         self.sorted_dirs = []
         self.dir_stats = {}
@@ -195,6 +199,13 @@ class DedupdirTUI:
             pass
         return None
 
+    def get_dir_mtime(self, dir_path):
+        """Get the most recent mtime of any file in the directory."""
+        try:
+            return dir_path.stat().st_mtime
+        except:
+            return 0
+
     def recalculate_sorted_dirs(self):
         """Recalculate sorted_dirs including ALL directories, even those with 0% redundancy.
 
@@ -206,11 +217,55 @@ class DedupdirTUI:
             stats = self.get_recursive_stats(dir_path)
             all_dirs_with_stats.append((dir_path, stats))
 
-        # Sort directories by redundancy score
-        self.sorted_dirs = sorted(
-            all_dirs_with_stats,
-            key=lambda x: (-calculate_redundancy_score(x[1][0], x[1][1]), str(x[0]))
-        )
+        # Sort based on current sort mode
+        if self.sort_mode == 'redundancy':
+            self.sorted_dirs = sorted(
+                all_dirs_with_stats,
+                key=lambda x: (-calculate_redundancy_score(x[1][0], x[1][1]), str(x[0]))
+            )
+        elif self.sort_mode == 'duplicates':
+            self.sorted_dirs = sorted(
+                all_dirs_with_stats,
+                key=lambda x: (-x[1][0], str(x[0]))  # By duplicate count descending
+            )
+        elif self.sort_mode == 'total':
+            self.sorted_dirs = sorted(
+                all_dirs_with_stats,
+                key=lambda x: (-x[1][1], str(x[0]))  # By total files descending
+            )
+        elif self.sort_mode == 'path':
+            self.sorted_dirs = sorted(
+                all_dirs_with_stats,
+                key=lambda x: str(x[0])  # By path ascending
+            )
+        elif self.sort_mode == 'size':
+            self.sorted_dirs = sorted(
+                all_dirs_with_stats,
+                key=lambda x: (-self.get_dir_size(x[0]), str(x[0]))  # By size descending
+            )
+        elif self.sort_mode == 'mtime':
+            self.sorted_dirs = sorted(
+                all_dirs_with_stats,
+                key=lambda x: (-self.get_dir_mtime(x[0]), str(x[0]))  # By mtime descending (newest first)
+            )
+        else:
+            # Default to redundancy
+            self.sorted_dirs = sorted(
+                all_dirs_with_stats,
+                key=lambda x: (-calculate_redundancy_score(x[1][0], x[1][1]), str(x[0]))
+            )
+
+    def cycle_sort_mode(self, reverse=False):
+        """Cycle to the next (or previous) sort mode and re-sort directories."""
+        current_idx = self.sort_modes.index(self.sort_mode)
+        if reverse:
+            next_idx = (current_idx - 1) % len(self.sort_modes)
+        else:
+            next_idx = (current_idx + 1) % len(self.sort_modes)
+        self.sort_mode = self.sort_modes[next_idx]
+        self.recalculate_sorted_dirs()
+        self.invalidate_display_cache()
+        self.invalidate_relationship_cache()
 
     def invalidate_display_cache(self):
         """Invalidate the display list cache, forcing a rebuild on next access."""
@@ -1049,20 +1104,24 @@ class DedupdirTUI:
             win.noutrefresh()
             return
 
-        # Column headers with full-width underline
+        # Column headers with full-width underline, highlight current sort column
         header_line = 1
+        base_attr = curses.A_BOLD | curses.A_UNDERLINE
+        sort_attr = curses.A_BOLD | curses.A_UNDERLINE | curses.A_REVERSE
         try:
             # Draw full-width underline first
             win.addstr(header_line, 1, " " * (width - 2), curses.A_UNDERLINE)
-            # Then draw headers on top
-            win.addstr(header_line, 1, " %Dup", curses.A_BOLD | curses.A_UNDERLINE)
-            win.addstr(header_line, 8, "#Dup", curses.A_BOLD | curses.A_UNDERLINE)
-            win.addstr(header_line, 14, "Total", curses.A_BOLD | curses.A_UNDERLINE)
-            win.addstr(header_line, 21, "Directory Path", curses.A_BOLD | curses.A_UNDERLINE)
+            # Then draw headers on top, highlighting the current sort column
+            win.addstr(header_line, 1, " %Dup", sort_attr if self.sort_mode == 'redundancy' else base_attr)
+            win.addstr(header_line, 8, "#Dup", sort_attr if self.sort_mode == 'duplicates' else base_attr)
+            win.addstr(header_line, 14, "Total", sort_attr if self.sort_mode == 'total' else base_attr)
+            win.addstr(header_line, 21, "Directory Path", sort_attr if self.sort_mode == 'path' else base_attr)
             # Right-aligned headers
             if width > 60:
-                right_header = "Size  MTime"
-                win.addstr(header_line, width - len(right_header) - 2, right_header, curses.A_BOLD | curses.A_UNDERLINE)
+                size_attr = sort_attr if self.sort_mode == 'size' else base_attr
+                mtime_attr = sort_attr if self.sort_mode == 'mtime' else base_attr
+                win.addstr(header_line, width - 13, "Size", size_attr)
+                win.addstr(header_line, width - 7, "MTime", mtime_attr)
         except curses.error:
             pass
 
@@ -1602,25 +1661,26 @@ class DedupdirTUI:
 
 Navigation:
   ↑/↓ or j/k        Navigate items
-  ←/→ or h/l        Switch panes / navigate filtered view
-  Tab               Switch between top and bottom pane
-  Enter             Drill down into filtered view
+  ←/→ or h/l        Collapse/expand groups
+  Enter             Drill down into directory
   PgUp/PgDn         Page up/down
   Ctrl-B/Ctrl-F     Page up/down
-  Home/End or </>   Jump to first/last item
+  Home/End or g/G   Jump to first/last item
+
+Sorting:
+  s                 Cycle sort mode (current column highlighted)
+                    Modes: %Dup, #Dup, Total, Path, Size, MTime
 
 Actions:
-  v                 View selected file
-  o                 Open selected file with system default application
-  t                 Trash selected file or directory
+  o                 Open directory in file browser
+  t                 Trash selected directory
   u                 Undo last trash operation
   T                 View trash
   q                 Quit
 
-The top pane shows directories by redundancy.
-The bottom pane shows files in selected directory.
-Selecting a file filters the top pane to show only
-directories containing that file."""
+Directories showing 100% redundancy are safe to trash -
+all their files exist elsewhere. Collapsed groups (▶)
+contain multiple 100% redundant subdirectories."""
 
         elif mode == 'trash':
             return """Trash Viewer
@@ -1783,7 +1843,7 @@ Actions:
     def get_hint_text(self, mode):
         """Get hint bar text for the given mode."""
         if mode == 'main':
-            return "↑↓:Navigate  Enter:Drill Down  o:Open  t:Trash  T:View Trash  q:Quit"
+            return "↑↓:Navigate  Enter:Drill Down  s:Sort  o:Open  t:Trash  T:View Trash  q:Quit"
         elif mode == 'dir_detail':
             return "↑↓:Navigate  Enter:Drill Down  v:View  o:Open  t:Trash  Esc:Back"
         elif mode == 'file_detail':
@@ -2487,6 +2547,44 @@ Actions:
             # 'o' key - open file
             elif key in (ord('o'), ord('O')):
                 self.handle_open_key(view)
+                continue
+
+            # 's'/'S' key - cycle sort mode (main view only)
+            elif key in (ord('s'), ord('S')):
+                if view['type'] == 'main':
+                    # Remember currently selected directory
+                    selected_path = None
+                    display_list = self.build_display_list()
+                    if self.selected_idx < len(display_list):
+                        item = display_list[self.selected_idx]
+                        if item[0] == 'dir':
+                            selected_path = item[1]
+                        elif item[0] == 'collapse':
+                            selected_path = item[1]  # parent path
+
+                    self.cycle_sort_mode(reverse=(key == ord('S')))
+
+                    # Find the same directory in the new sorted list
+                    if selected_path:
+                        new_display_list = self.build_display_list()
+                        for i, item in enumerate(new_display_list):
+                            if item[0] == 'dir' and item[1] == selected_path:
+                                self.selected_idx = i
+                                break
+                            elif item[0] == 'collapse' and item[1] == selected_path:
+                                self.selected_idx = i
+                                break
+                        else:
+                            self.selected_idx = 0
+                    else:
+                        self.selected_idx = 0
+
+                    # Adjust scroll to keep selection visible
+                    visible_lines = self.get_current_visible_lines(usable_height)
+                    if self.selected_idx < self.scroll_offset:
+                        self.scroll_offset = self.selected_idx
+                    elif self.selected_idx >= self.scroll_offset + visible_lines:
+                        self.scroll_offset = self.selected_idx - visible_lines + 1
                 continue
 
 def main():
