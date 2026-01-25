@@ -1218,14 +1218,6 @@ class DedupdirTUI:
         except curses.error:
             pass
 
-        # Show quit message if needed
-        if self.show_quit_message:
-            msg = " Press 'q' to quit "
-            try:
-                win.addstr(height - 1, width - len(msg) - 1, msg, curses.A_REVERSE | curses.A_BOLD)
-            except curses.error:
-                pass
-
         if not display_list:
             win.addstr(2, 1, "No directories to display")
             win.noutrefresh()
@@ -2027,7 +2019,12 @@ Actions:
         """Draw hint bar at bottom of screen."""
         height, width = stdscr.getmaxyx()
 
-        hint_text = self.get_hint_text(mode)
+        # Check for quit message flash
+        if self.show_quit_message:
+            hint_text = ">>> Press 'q' to quit <<<"
+            self.show_quit_message = False  # Clear after one display
+        else:
+            hint_text = self.get_hint_text(mode)
         help_text = "[?] Help"
 
         # Add verification status if running
