@@ -151,6 +151,19 @@ class DedupdirTUI:
         if self.cached_hashes:
             self.start_background_verification()
 
+    def rescan(self):
+        """Invalidate all caches and rescan the directory tree.
+
+        Use this after filesystem modifications (promote, trash, restore).
+        Caches must be invalidated BEFORE scan() because scan() calls
+        recalculate_sorted_dirs() which uses get_recursive_stats() (cached).
+        """
+        self.invalidate_relationship_cache()
+        self.invalidate_size_cache()
+        self.invalidate_recursive_stats_cache()
+        self.invalidate_dir_contents_cache()
+        self.scan(quiet=True)
+
     def start_background_verification(self):
         """Start a background thread to verify cached hashes."""
         if not self.cached_hashes:
@@ -1084,11 +1097,7 @@ class DedupdirTUI:
         self.cleanup_empty_trash_dirs(trash_path.parent)
 
         # Rescan to update data structures
-        self.scan(quiet=True)
-        self.invalidate_relationship_cache()
-        self.invalidate_size_cache()
-        self.invalidate_recursive_stats_cache()
-        self.invalidate_dir_contents_cache()
+        self.rescan()
 
         return True
 
@@ -1113,7 +1122,7 @@ class DedupdirTUI:
         self.trash_stack = [d for d in self.trash_stack if d[1] != trash_record['trash_path']]
 
         # Rescan to update data structures
-        self.scan(quiet=True)
+        self.rescan()
 
         return True
 
@@ -2522,11 +2531,7 @@ Actions:
                     prev_view_is_parent = True
 
         # Rescan to update data structures
-        self.scan(quiet=True)
-        self.invalidate_relationship_cache()
-        self.invalidate_size_cache()
-        self.invalidate_recursive_stats_cache()
-        self.invalidate_dir_contents_cache()
+        self.rescan()
 
         if prev_view_is_parent:
             # Pop current view and highlight the moved item in parent
